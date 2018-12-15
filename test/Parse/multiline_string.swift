@@ -1,4 +1,4 @@
-// RUN: %target-swift-frontend -dump-ast %s 2>&1 | %FileCheck %s
+// RUN: %target-swift-frontend -dump-ast %s | %FileCheck %s
 
 import Swift
 
@@ -83,6 +83,11 @@ _ = """
 // CHECK: "\\"
 
 _ = """
+  \\
+  """
+// CHECK: "\\"
+
+_ = """
 
   ABC
   """
@@ -107,6 +112,51 @@ _ = """
 	Nu
 	"""
 // CHECK: "Twelve\nNu"
+
+_ = """
+  newline \
+  elided
+  """
+// CHECK: "newline elided"
+
+// contains trailing whitepsace
+_ = """
+  trailing \
+  \("""
+    substring1 \
+    \("""
+      substring2 \          
+      substring3
+      """)
+    """) \
+  whitepsace
+  """
+// CHECK: "trailing "
+// CHECK: "substring1 "
+// CHECK: "substring2 substring3"
+// CHECK: " whitepsace"
+
+// contains trailing whitepsace
+_ = """
+    foo\ 
+
+    bar
+    """
+// CHECK: "foo\nbar"
+
+// contains trailing whitepsace
+_ = """
+    foo\ 
+    
+    bar
+    """
+// CHECK: "foo\nbar"
+
+_ = """
+    foo \
+      bar
+    """
+// CHECK: "foo   bar"
 
 _ = """
 
@@ -171,9 +221,14 @@ _ = "hello\("""
 _ = """
     welcome
     \(
+      /*
+        ')' or '"""' in comment.
+        """
+      */
       "to\("""
            Swift
            """)"
+      // ) or """ in comment.
     )
     !
     """

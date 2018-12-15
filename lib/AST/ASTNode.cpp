@@ -32,12 +32,12 @@ SourceRange ASTNode::getSourceRange() const {
   llvm_unreachable("unsupported AST node");
 }
 
-/// \brief Return the location of the start of the statement.
+/// Return the location of the start of the statement.
 SourceLoc ASTNode::getStartLoc() const {
   return getSourceRange().Start;
 }
 
-/// \brief Return the location of the end of the statement.
+/// Return the location of the end of the statement.
 SourceLoc ASTNode::getEndLoc() const {
   return getSourceRange().End;
 }
@@ -73,16 +73,6 @@ void ASTNode::walk(ASTWalker &Walker) {
     S->walk(Walker);
   else if (auto *D = this->dyn_cast<Decl*>())
     D->walk(Walker);
-  else
-    llvm_unreachable("unsupported AST node");
-}
-void ASTNode::walk(SourceEntityWalker &Walker) {
-  if (auto *E = this->dyn_cast<Expr*>())
-    Walker.walk(E);
-  else if (auto *S = this->dyn_cast<Stmt*>())
-    Walker.walk(S);
-  else if (auto *D = this->dyn_cast<Decl*>())
-    Walker.walk(D);
   else
     llvm_unreachable("unsupported AST node");
 }

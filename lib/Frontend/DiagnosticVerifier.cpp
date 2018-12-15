@@ -17,9 +17,10 @@
 #include "swift/Frontend/DiagnosticVerifier.h"
 #include "swift/Basic/SourceManager.h"
 #include "swift/Parse/Lexer.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
-#include <fstream>
+
 using namespace swift;
 
 namespace {
@@ -67,6 +68,7 @@ static std::string getDiagKindString(llvm::SourceMgr::DiagKind Kind) {
   case llvm::SourceMgr::DK_Error: return "error";
   case llvm::SourceMgr::DK_Warning: return "warning";
   case llvm::SourceMgr::DK_Note: return "note";
+  case llvm::SourceMgr::DK_Remark: return "remark";
   }
 
   llvm_unreachable("Unhandled DiagKind in switch.");
@@ -197,7 +199,7 @@ static std::string renderFixits(ArrayRef<llvm::SMFixIt> fixits,
   return OS.str();
 }
 
-/// \brief After the file has been processed, check to see if we got all of
+/// After the file has been processed, check to see if we got all of
 /// the expected diagnostics and check to see if there were any unexpected
 /// ones.
 bool DiagnosticVerifier::verifyFile(unsigned BufferID,
@@ -687,9 +689,12 @@ void DiagnosticVerifier::autoApplyFixes(unsigned BufferID,
   
   // Retain the end of the file.
   Result.append(LastPos, bufferRange.end());
-  
-  std::ofstream outs(memBuffer->getBufferIdentifier());
-  outs << Result;
+
+  std::error_code error;
+  llvm::raw_fd_ostream outs(memBuffer->getBufferIdentifier(), error,
+                            llvm::sys::fs::OpenFlags::F_None);
+  if (!error)
+    outs << Result;
 }
 
 //===----------------------------------------------------------------------===//

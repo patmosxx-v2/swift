@@ -8,10 +8,13 @@
 
 One of the top priorities for Swift right now is compatibility across future Swift versions. Compatibility aims at accomplishing two goals:
 
-1. *Source compatibility* means that newer compilers can compile code written in an older version of Swift. This aims to reduce the migration pain that Swift developers face when migrating to a newer Swift version. Without source compatibility, projects face version-lock where all source code in a project and its packages must be written in the same version of Swift. With source compatibility, package authors will be able to maintain a single code base across multiple Swift versions while allowing their users to use a newer version of Swift.
-2. *Binary framework & runtime compatibility* enables the distribution of frameworks in a binary form that works across multiple Swift versions. Binary frameworks include both a *Swift module file*, which communicates source-level information of the framework's API, and a *shared library*, which provides the compiled implementation that is loaded at runtime. Thus, there are two necessary goals for binary framework compatibility:
-    * *Module format stability* stabilizes the module file, which is the compiler's representation of the public interfaces of a framework. This includes API declarations and inlineable code. The module file is used by the compiler for necessary tasks such as type checking and code generation when compiling client code using a framework.
-    * *ABI stability* enables binary compatibility between applications and libraries compiled with different Swift versions. It is the focus of the rest of this document.
+1. **Source compatibility** means that newer compilers can compile code written in an older version of Swift. This aims to reduce the migration pain that Swift developers face when migrating to a newer Swift version. Without source compatibility, projects face version-lock where all source code in a project and its packages must be written in the same version of Swift. With source compatibility, package authors will be able to maintain a single code base across multiple Swift versions while allowing their users to use a newer version of Swift.
+
+2. **Binary framework & runtime compatibility** enables the distribution of frameworks in a binary form that works across multiple Swift versions. Binary frameworks include both a *Swift module file*, which communicates source-level information of the framework's API, and a *shared library*, which provides the compiled implementation that is loaded at runtime. Thus, there are two necessary goals for binary framework compatibility:
+
+    * **Module format stability** stabilizes the module file, which is the compiler's representation of the public interfaces of a framework. This includes API declarations and inlineable code. The module file is used by the compiler for necessary tasks such as type checking and code generation when compiling client code using a framework.
+
+    * **ABI stability** enables binary compatibility between applications and libraries compiled with different Swift versions. It is the focus of the rest of this document.
 
 This document is an exploration and explanation of Swift's ABI alongside the goals and investigations needed before declaring Swift's ABI stable. It is meant to be a resource to the community as well as a declaration of the direction of Swift's ABI.
 
@@ -113,7 +116,7 @@ In order to allow for cross-module optimizations for modules that are distribute
 
 Resilient types are required to have opaque layout when exposed outside their resilience domain. Inside a resilience domain, this requirement is lifted and their layout may be statically known or opaque as determined by their type (see [previous section](#opaque-layout)).
 
-Annotations may be applied to a library's types in future versions of that library, in which case the annotations are versioned, yet the library remains binary compatible. How how this will impact the ABI is still under investigation [[SR-3911](https://bugs.swift.org/browse/SR-3911)].
+Annotations may be applied to a library's types in future versions of that library, in which case the annotations are versioned, yet the library remains binary compatible. How this will impact the ABI is still under investigation [[SR-3911](https://bugs.swift.org/browse/SR-3911)].
 
 
 #### <a name="abstraction-levels"></a>Abstraction Levels
@@ -210,7 +213,7 @@ ABI stability means nailing down type layout and making decisions about how to h
 
 For all of the areas discussed above, more aggressive layout improvements may be invented in the post-ABI stability future. For example, we may want to explore rearranging and packing nested type data members with outer type data members. Such improvements would have to be done in an ABI-additive fashion through deployment target and/or min-version checking. This may mean that the module file will need to track per-type ABI versioning information.
 
-A potentially out of date description of Swift's current type layout can be found in the [Type Layout docs](https://github.com/apple/swift/blob/master/docs/ABI.rst#type-layout).
+A potentially out of date description of Swift's current type layout can be found in the [Type Layout docs](https://github.com/apple/swift/blob/master/docs/ABI/TypeLayout.rst).
 
 
 ## <a name="metadata"></a>Type Metadata
@@ -227,7 +230,7 @@ Metadata has many historical artifacts in its representation that we want to cle
 
 Stabilizing the ABI means producing a precise technical specification for the fixed part of the metadata layout of all language constructs so that future compilers and tools can continue to read and write them. A prose description is not necessarily needed, though explanations are useful. We will also want to carve out extra space for areas where it is likely to be needed for future functionality [[SR-3731](https://bugs.swift.org/browse/SR-3731)].
 
-For more, but potentially out of date, details see the [Type Metadata docs](https://github.com/apple/swift/blob/master/docs/ABI.rst#type-metadata).
+For more, but potentially out of date, details see the [Type Metadata docs](https://github.com/apple/swift/blob/master/docs/ABI/TypeMetadata.rst).
 
 ### Generic Parameters
 
@@ -263,7 +266,7 @@ Alternatively, we may decide to perform inter-module calls through opaque *thunk
 
 ### Protocol and Existential Metadata
 
-#####<a name="witness-tables"></a>Protocol Witness Tables
+##### <a name="witness-tables"></a>Protocol Witness Tables
 
 The protocol witness table is a function table of a type's conformance to the protocol's interfaces. If the protocol also has an associated type requirement, then the witness table will store the metadata for the associated type. Protocol witness tables are used with [existential containers](#existential-containers) where the run time type is not known.
 
@@ -281,7 +284,7 @@ In addition to common metadata entries, function type metadata stores informatio
 
 Mangling is used to produce unique symbols. It applies to both external (public) symbols as well as internal or hidden symbols. Only the mangling scheme for external symbols is part of ABI.
 
-ABI stability means a stable mangling scheme, fully specified so that future compilers and tools can honor it. For a potentially out-of-date specification of what the mangling currently looks like, see the [Name Mangling docs](https://github.com/apple/swift/blob/master/docs/ABI.rst#mangling).
+ABI stability means a stable mangling scheme, fully specified so that future compilers and tools can honor it. For a potentially out-of-date specification of what the mangling currently looks like, see the [Name Mangling docs](https://github.com/apple/swift/blob/master/docs/ABI/Mangling.rst).
 
 There are some corner cases currently in the mangling scheme that should be fixed before declaring ABI stability. We need to come up with a canonicalization of generic and protocol requirements to allow for order-agnostic mangling [[SR-3733](https://bugs.swift.org/browse/SR-3733)]. We also may decide to more carefully mangle variadicity of function parameters, etc [[SR-3734](https://bugs.swift.org/browse/SR-3734)]. Most often, though, mangling improvements focus on reducing symbol size.
 

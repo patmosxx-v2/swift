@@ -38,12 +38,12 @@ public struct StaticString
 
   /// Either a pointer to the start of UTF-8 data, represented as an integer,
   /// or an integer representation of a single Unicode scalar.
-  @_versioned
+  @usableFromInline
   internal var _startPtrOrData: Builtin.Word
 
   /// If `_startPtrOrData` is a pointer, contains the length of the UTF-8 data
   /// in bytes.
-  @_versioned
+  @usableFromInline
   internal var _utf8CodeUnitCount: Builtin.Word
 
   /// Extra flags:
@@ -53,7 +53,7 @@ public struct StaticString
   ///
   /// - bit 1: set to 1 if `_startPtrOrData` is a pointer and string data is
   ///   ASCII.
-  @_versioned
+  @usableFromInline
   internal var _flags: Builtin.Int8
 
   /// A pointer to the beginning of the string's UTF-8 encoded representation.
@@ -130,6 +130,7 @@ public struct StaticString
   ///   `withUTF8Buffer(invoke:)` method. The pointer argument is valid only
   ///   for the duration of the method's execution.
   /// - Returns: The return value, if any, of the `body` closure.
+  @_transparent
   public func withUTF8Buffer<R>(
     _ body: (UnsafeBufferPointer<UInt8>) -> R) -> R {
     if hasPointerRepresentation {
@@ -159,8 +160,7 @@ public struct StaticString
     self = ""
   }
 
-  @_versioned
-  @_transparent
+  @usableFromInline @_transparent
   internal init(
     _start: Builtin.RawPointer,
     utf8CodeUnitCount: Builtin.Word,
@@ -176,8 +176,7 @@ public struct StaticString
       : (0x0 as UInt8)._value
   }
 
-  @_versioned
-  @_transparent
+  @usableFromInline @_transparent
   internal init(
     unicodeScalar: Builtin.Int32
   ) {
@@ -188,7 +187,7 @@ public struct StaticString
       : (0x1 as UInt8)._value
   }
 
-  @effects(readonly)
+  @_effects(readonly)
   @_transparent
   public init(_builtinUnicodeScalarLiteral value: Builtin.Int32) {
     self = StaticString(unicodeScalar: value)
@@ -198,13 +197,13 @@ public struct StaticString
   ///
   /// Do not call this initializer directly. It may be used by the compiler
   /// when you initialize a static string with a Unicode scalar.
-  @effects(readonly)
+  @_effects(readonly)
   @_transparent
   public init(unicodeScalarLiteral value: StaticString) {
     self = value
   }
 
-  @effects(readonly)
+  @_effects(readonly)
   @_transparent
   public init(
     _builtinExtendedGraphemeClusterLiteral start: Builtin.RawPointer,
@@ -219,17 +218,17 @@ public struct StaticString
   }
 
   /// Creates an instance initialized to a single character that is made up of
-  /// one or more Unicode code points.
+  /// one or more Unicode scalar values.
   ///
   /// Do not call this initializer directly. It may be used by the compiler
   /// when you initialize a static string using an extended grapheme cluster.
-  @effects(readonly)
+  @_effects(readonly)
   @_transparent
   public init(extendedGraphemeClusterLiteral value: StaticString) {
     self = value
   }
 
-  @effects(readonly)
+  @_effects(readonly)
   @_transparent
   public init(
     _builtinStringLiteral start: Builtin.RawPointer,
@@ -246,7 +245,7 @@ public struct StaticString
   ///
   /// Do not call this initializer directly. It may be used by the compiler
   /// when you initialize a static string using a string literal.
-  @effects(readonly)
+  @_effects(readonly)
   @_transparent
   public init(stringLiteral value: StaticString) {
     self = value
@@ -254,10 +253,7 @@ public struct StaticString
 
   /// A string representation of the static string.
   public var description: String {
-    return withUTF8Buffer {
-      (buffer) in
-      return String._fromWellFormedCodeUnitSequence(UTF8.self, input: buffer)
-    }
+    return withUTF8Buffer { String._uncheckedFromUTF8($0) }
   }
 
   /// A textual representation of the static string, suitable for debugging.
@@ -271,16 +267,3 @@ extension StaticString {
     return Mirror(reflecting: description)
   }
 }
-
-extension StaticString {
-  @available(*, unavailable, renamed: "utf8CodeUnitCount")
-  public var byteSize: Int {
-    Builtin.unreachable()
-  }
-
-  @available(*, unavailable, message: "use the 'String(_:)' initializer")
-  public var stringValue: String {
-    Builtin.unreachable()
-  }
-}
-

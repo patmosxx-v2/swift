@@ -39,7 +39,7 @@ bool SILLoop::canDuplicate(SILInstruction *I) const {
   // The deallocation of a stack allocation must be in the loop, otherwise the
   // deallocation will be fed by a phi node of two allocations.
   if (I->isAllocatingStack()) {
-    for (auto *UI : I->getUses()) {
+    for (auto *UI : cast<SingleValueInstruction>(I)->getUses()) {
       if (UI->getUser()->isDeallocatingStack()) {
         if (!contains(UI->getUser()->getParent()))
           return false;
@@ -60,10 +60,12 @@ bool SILLoop::canDuplicate(SILInstruction *I) const {
   }
 
   // We can't have a phi of two openexistential instructions of different UUID.
-  SILInstruction *OEI = dyn_cast<OpenExistentialAddrInst>(I);
-  if (OEI || (OEI = dyn_cast<OpenExistentialRefInst>(I)) ||
-      (OEI = dyn_cast<OpenExistentialMetatypeInst>(I))) {
-    for (auto *UI : OEI->getUses())
+  if (isa<OpenExistentialAddrInst>(I) || isa<OpenExistentialRefInst>(I) ||
+      isa<OpenExistentialMetatypeInst>(I) ||
+      isa<OpenExistentialValueInst>(I) || isa<OpenExistentialBoxInst>(I) ||
+      isa<OpenExistentialBoxValueInst>(I)) {
+    SingleValueInstruction *OI = cast<SingleValueInstruction>(I);
+    for (auto *UI : OI->getUses())
       if (!contains(UI->getUser()))
         return false;
     return true;
@@ -76,7 +78,27 @@ bool SILLoop::canDuplicate(SILInstruction *I) const {
     return false;
   }
 
+  // The entire coroutine execution must be within the loop.
+  // Note that we don't have to worry about the reverse --- a loop which
+  // contains an end_apply or abort_apply of an external begin_apply ---
+  // because that wouldn't be structurally valid in the first place.
+  if (auto BAI = dyn_cast<BeginApplyInst>(I)) {
+    for (auto UI : BAI->getTokenResult()->getUses()) {
+      auto User = UI->getUser();
+      assert(isa<EndApplyInst>(User) || isa<AbortApplyInst>(User));
+      if (!contains(User))
+        return false;
+    }
+    return true;
+  }
+
   if (isa<ThrowInst>(I))
+    return false;
+
+  if (isa<BeginAccessInst>(I))
+    return false;
+
+  if (isa<DynamicMethodBranchInst>(I))
     return false;
 
   assert(I->isTriviallyDuplicatable() &&

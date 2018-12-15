@@ -30,19 +30,20 @@ namespace SourceKit {
 class Context {
   std::string RuntimeLibPath;
   std::unique_ptr<LangSupport> SwiftLang;
-  std::unique_ptr<NotificationCenter> NotificationCtr;
+  std::shared_ptr<NotificationCenter> NotificationCtr;
 
 public:
   Context(StringRef RuntimeLibPath,
           llvm::function_ref<
-              std::unique_ptr<LangSupport>(Context &)> LangSupportFactoryFn);
+              std::unique_ptr<LangSupport>(Context &)> LangSupportFactoryFn,
+          bool shouldDispatchNotificationsOnMain = true);
   ~Context();
 
   StringRef getRuntimeLibPath() const { return RuntimeLibPath; }
 
   LangSupport &getSwiftLangSupport() { return *SwiftLang; }
 
-  NotificationCenter &getNotificationCenter() { return *NotificationCtr; }
+  std::shared_ptr<NotificationCenter> getNotificationCenter() { return NotificationCtr; }
 };
 
 } // namespace SourceKit

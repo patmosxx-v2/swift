@@ -23,14 +23,17 @@ namespace swift {
 class ModuleDecl;
 class FileUnit;
 class FrontendOptions;
+struct TBDGenOptions;
 
-bool writeTBD(ModuleDecl *M, bool hasMultipleIRGenThreads,
-              llvm::StringRef OutputFilename);
+bool writeTBD(ModuleDecl *M, StringRef OutputFilename,
+              const TBDGenOptions &Opts);
 bool inputFileKindCanHaveTBDValidated(InputFileKind kind);
 bool validateTBD(ModuleDecl *M, llvm::Module &IRModule,
-                 bool hasMultipleIRGenThreads, bool diagnoseExtraSymbolsInTBD);
+                 const TBDGenOptions &opts,
+                 bool diagnoseExtraSymbolsInTBD);
 bool validateTBD(FileUnit *M, llvm::Module &IRModule,
-                 bool hasMultipleIRGenThreads, bool diagnoseExtraSymbolsInTBD);
+                 const TBDGenOptions &opts,
+                 bool diagnoseExtraSymbolsInTBD);
 }
 
 #endif

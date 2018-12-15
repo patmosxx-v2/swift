@@ -11,12 +11,81 @@
 //===----------------------------------------------------------------------===//
 
 #include "swift/SILOptimizer/Utils/StackNesting.h"
-#include "swift/SILOptimizer/Utils/CFG.h"
-#include "swift/SIL/SILFunction.h"
+#include "swift/SIL/BasicBlockUtils.h"
 #include "swift/SIL/SILBuilder.h"
+#include "swift/SIL/SILFunction.h"
 #include "llvm/Support/Debug.h"
 
 using namespace swift;
+
+bool swift::hasStackDifferencesAt(SILInstruction *start,
+                                  InstructionMatcher matcher) {
+  struct StackStatus {
+    /// The number of currently-active stack allocations on this path.
+    /// Because of the stack discipline, we only have to maintain a count.
+    unsigned depth;
+
+    /// Whether we've popped anything off of the stack that was active
+    /// at the start of the search.
+    bool hasPops;
+
+    bool hasDifferences() const { return hasPops || depth != 0; }
+  };
+
+  SmallPtrSet<SILBasicBlock*, 8> visited;
+  SmallVector<std::pair<SILInstruction *, StackStatus>, 8> worklist;
+  worklist.push_back({start, {0, false}});
+
+  while (!worklist.empty()) {
+    // Pull a block and depth off the worklist.
+    // Visitation order doesn't matter.
+    auto pair = worklist.pop_back_val();
+    auto status = pair.second;
+    auto firstInst = pair.first;
+    auto block = firstInst->getParent();
+
+    for (SILBasicBlock::iterator i(firstInst), e = block->end(); i != e; ++i) {
+      auto match = matcher(&*i);
+
+      // If this is an interesting instruction, check for stack
+      // differences here.
+      if (match.matches && status.hasDifferences())
+        return true;
+
+      // If we should halt, just go to the next work-list item, bypassing
+      // visiting the successors.
+      if (match.halt)
+        goto nextWorkListItem; // a labelled continue would be nice
+
+      // Otherwise, do stack-depth bookkeeping.
+      if (i->isAllocatingStack()) {
+        status.depth++;
+      } else if (i->isDeallocatingStack()) {
+        // If the stack depth is already zero, we're deallocating a stack
+        // allocation that was live into the search.
+        if (status.depth > 0) {
+          status.depth--;
+        } else {
+          status.hasPops = true;
+        }
+      }
+    }
+
+    // Add the successors to the worklist.
+    for (auto &succ : block->getSuccessors()) {
+      auto succBlock = succ.getBB();
+      auto insertResult = visited.insert(succBlock);
+      if (insertResult.second) {
+        worklist.push_back({&succBlock->front(), status});
+      }
+    }
+
+  nextWorkListItem: ;
+  }
+
+  return false;
+}
+
 
 void StackNesting::setup(SILFunction *F) {
   SmallVector<BlockInfo *, 8> WorkList;
@@ -41,15 +110,16 @@ void StackNesting::setup(SILFunction *F) {
     BlockInfo *BI = WorkList.pop_back_val();
     for (SILInstruction &I : *BI->Block) {
       if (I.isAllocatingStack()) {
+        auto Alloc = cast<AllocationInst>(&I);
         // Register this stack location.
         unsigned CurrentBitNumber = StackLocs.size();
-        StackLoc2BitNumbers[&I] = CurrentBitNumber;
-        StackLocs.push_back(StackLoc(&I));
+        StackLoc2BitNumbers[Alloc] = CurrentBitNumber;
+        StackLocs.push_back(StackLoc(Alloc));
 
-        BI->StackInsts.push_back(&I);
+        BI->StackInsts.push_back(Alloc);
 
       } else if (I.isDeallocatingStack()) {
-        auto *AllocInst = cast<SILInstruction>(I.getOperand(0));
+        auto *AllocInst = cast<SingleValueInstruction>(I.getOperand(0));
         if (!BI->StackInsts.empty() && BI->StackInsts.back() == AllocInst) {
           // As an optimization, we ignore perfectly nested alloc-dealloc pairs
           // inside a basic block.
@@ -114,7 +184,8 @@ bool StackNesting::solve() {
       }
       for (SILInstruction *StackInst : reversed(BI.StackInsts)) {
         if (StackInst->isAllocatingStack()) {
-          int BitNr = StackLoc2BitNumbers[StackInst];
+          auto AllocInst = cast<SingleValueInstruction>(StackInst);
+          int BitNr = StackLoc2BitNumbers[AllocInst];
           if (Bits != StackLocs[BitNr].AliveLocs) {
             // More locations are alive around the StackInst's location.
             // Update the AlivaLocs bitset, which contains all those alive
@@ -132,7 +203,8 @@ bool StackNesting::solve() {
           // A stack deallocation begins the lifetime of its location (in
           // reverse order). And it also begins the lifetime of all other
           // locations which are alive at the allocation point.
-          auto *AllocInst = cast<SILInstruction>(StackInst->getOperand(0));
+          auto *AllocInst =
+            cast<SingleValueInstruction>(StackInst->getOperand(0));
           int BitNr = StackLoc2BitNumbers[AllocInst];
           Bits |= StackLocs[BitNr].AliveLocs;
         }
@@ -147,14 +219,14 @@ bool StackNesting::solve() {
   return isNested;
 }
 
-static SILInstruction *createDealloc(SILInstruction *Alloc,
+static SILInstruction *createDealloc(AllocationInst *Alloc,
                                      SILInstruction *InsertionPoint,
                                      SILLocation Location) {
-  SILBuilder B(InsertionPoint);
+  SILBuilderWithScope B(InsertionPoint);
   switch (Alloc->getKind()) {
-    case ValueKind::AllocStackInst:
+    case SILInstructionKind::AllocStackInst:
       return B.createDeallocStack(Location, Alloc);
-    case ValueKind::AllocRefInst:
+    case SILInstructionKind::AllocRefInst:
       assert(cast<AllocRefInst>(Alloc)->canAllocOnStack());
       return B.createDeallocRef(Location, Alloc, /*canBeOnStack*/true);
     default:
@@ -176,7 +248,7 @@ bool StackNesting::insertDeallocs(const BitVector &AliveBefore,
   for (int LocNr = AliveBefore.find_first(); LocNr >= 0;
        LocNr = AliveBefore.find_next(LocNr)) {
     if (!AliveAfter.test(LocNr)) {
-      SILInstruction *Alloc = StackLocs[LocNr].Alloc;
+      AllocationInst *Alloc = StackLocs[LocNr].Alloc;
       InsertionPoint = createDealloc(Alloc, InsertionPoint,
                    Location.hasValue() ? Location.getValue() : Alloc->getLoc());
       changesMade = true;
@@ -244,13 +316,14 @@ StackNesting::Changes StackNesting::adaptDeallocs() {
     for (SILInstruction *StackInst : reversed(BI.StackInsts)) {
       if (StackInst->isAllocatingStack()) {
         // For allocations we just update the bit-set.
-        int BitNr = StackLoc2BitNumbers.lookup(StackInst);
+        auto AllocInst = cast<SingleValueInstruction>(StackInst);
+        int BitNr = StackLoc2BitNumbers.lookup(AllocInst);
         assert(Bits == StackLocs[BitNr].AliveLocs &&
                "dataflow didn't converge");
         Bits.reset(BitNr);
       } else if (StackInst->isDeallocatingStack()) {
         // Handle deallocations.
-        auto *AllocInst = cast<SILInstruction>(StackInst->getOperand(0));
+        auto *AllocInst = cast<SingleValueInstruction>(StackInst->getOperand(0));
         SILLocation Loc = StackInst->getLoc();
         int BitNr = StackLoc2BitNumbers.lookup(AllocInst);
         SILInstruction *InsertionPoint = &*std::next(StackInst->getIterator());
@@ -301,12 +374,13 @@ void StackNesting::dump() const {
     dumpBits(BI.AliveStackLocsAtEntry);
     for (SILInstruction *StackInst : BI.StackInsts) {
       if (StackInst->isAllocatingStack()) {
-        int BitNr = StackLoc2BitNumbers.lookup(StackInst);
+        auto AllocInst = cast<AllocationInst>(StackInst);
+        int BitNr = StackLoc2BitNumbers.lookup(AllocInst);
         llvm::dbgs() << "  alloc #" << BitNr << ": alive=";
         dumpBits(StackLocs[BitNr].AliveLocs);
         llvm::dbgs() << "    " << *StackInst;
       } else if (StackInst->isDeallocatingStack()) {
-        auto *AllocInst = cast<SILInstruction>(StackInst->getOperand(0));
+        auto *AllocInst = cast<AllocationInst>(StackInst->getOperand(0));
         int BitNr = StackLoc2BitNumbers.lookup(AllocInst);
         llvm::dbgs() << "  dealloc for #" << BitNr << "\n"
                         "    " << *StackInst;

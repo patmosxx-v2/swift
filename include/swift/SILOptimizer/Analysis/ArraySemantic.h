@@ -29,7 +29,6 @@ enum class ArrayCallKind {
   kGetCount,
   kGetCapacity,
   kGetElement,
-  kGetArrayOwner,
   kGetElementAddress,
   kMakeMutable,
   kMutateUnknown,
@@ -49,17 +48,31 @@ enum class ArrayCallKind {
 class ArraySemanticsCall {
   ApplyInst *SemanticsCall;
 
+  void initialize(ApplyInst *apply, StringRef semanticString,
+                  bool matchPartialName);
+
 public:
+  /// Match calls with any array semantic.
+  template <class NodeTy>
+  ArraySemanticsCall(NodeTy node)
+    : ArraySemanticsCall(node, "array.", /*allow partial*/ true) {}
+
+  /// Match calls with a specific array semantic.
+  template <class NodeTy>
+  ArraySemanticsCall(NodeTy node, StringRef semanticName)
+    : ArraySemanticsCall(node, semanticName, /*allow partial*/ false) {}
+
   /// Match array semantic calls.
-  ArraySemanticsCall(ValueBase *V, StringRef SemanticStr,
+  ArraySemanticsCall(ApplyInst *apply, StringRef SemanticStr,
                      bool MatchPartialName);
 
-  /// Match any array semantics call.
-  ArraySemanticsCall(ValueBase *V) : ArraySemanticsCall(V, "array.", true) {}
+  /// Match array semantic calls.
+  ArraySemanticsCall(SILInstruction *I, StringRef semanticName,
+                     bool matchPartialName);
 
-  /// Match a specific array semantic call.
-  ArraySemanticsCall(ValueBase *V, StringRef SemanticStr)
-      : ArraySemanticsCall(V, SemanticStr, false) {}
+  /// Match array semantic calls.
+  ArraySemanticsCall(SILValue V, StringRef semanticName,
+                     bool matchPartialName);
 
   /// Can we hoist this call.
   bool canHoist(SILInstruction *To, DominanceInfo *DT) const;
@@ -141,7 +154,7 @@ public:
   bool replaceByAppendingValues(SILModule &M, SILFunction *AppendFn,
                                 SILFunction *ReserveFn,
                                 const llvm::SmallVectorImpl<SILValue> &Vals,
-                                ArrayRef<Substitution> Subs);
+                                SubstitutionMap Subs);
 
   /// Hoist the call to the insert point.
   void hoist(SILInstruction *InsertBefore, DominanceInfo *DT) {
@@ -155,6 +168,8 @@ public:
 
   /// Get the semantics call as an ApplyInst.
   operator ApplyInst *() const { return SemanticsCall; }
+
+  SILValue getCallResult() const { return SemanticsCall; }
 
   /// Is this a semantics call.
   operator bool() const { return SemanticsCall != nullptr; }

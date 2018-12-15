@@ -20,6 +20,25 @@
 
 namespace swift {
 
+struct InstructionMatchResult {
+  /// The instruction matches.
+  bool matches;
+
+  /// The search should be halted.
+  bool halt;
+};
+
+using InstructionMatcher =
+  llvm::function_ref<InstructionMatchResult(SILInstruction *i)>;
+
+/// Given a predicate defining interesting instructions, check whether
+/// the stack is different at any of them from how it stood at the start
+/// of the search.
+///
+/// The matcher function must halt the search before any edges which would
+/// lead back to before the start point.
+bool hasStackDifferencesAt(SILInstruction *start, InstructionMatcher matcher);
+
 /// A utility to correct the nesting of stack allocating/deallocating
 /// instructions.
 ///
@@ -48,7 +67,7 @@ namespace swift {
 ///
 class StackNesting {
 
-  typedef llvm::SmallBitVector BitVector;
+  typedef SmallBitVector BitVector;
 
   /// Data stored for each block (actually for each block which is not dead).
   struct BlockInfo {
@@ -79,10 +98,10 @@ class StackNesting {
   ///
   /// Each stack location is allocated by a single allocation instruction.
   struct StackLoc {
-    StackLoc(SILInstruction *Alloc) : Alloc(Alloc) { }
+    StackLoc(AllocationInst *Alloc) : Alloc(Alloc) { }
 
     /// Back-link to the allocation instruction.
-    SILInstruction *Alloc;
+    AllocationInst *Alloc;
 
     /// Bit-set which represents all alive locations at this allocation.
     /// It obviously includes this location itself. And it includes all "outer"
@@ -91,7 +110,7 @@ class StackNesting {
   };
 
   /// Mapping from stack allocations (= locations) to bit numbers.
-  llvm::DenseMap<SILInstruction *, unsigned> StackLoc2BitNumbers;
+  llvm::DenseMap<SingleValueInstruction *, unsigned> StackLoc2BitNumbers;
 
   /// The list of stack locations. The index into this array is also the bit
   /// number in the bit-sets.

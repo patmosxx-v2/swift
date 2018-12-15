@@ -1,4 +1,4 @@
-// RUN: rm -rf %t && mkdir %t
+// RUN: %empty-directory(%t)
 // RUN: %target-build-swift -swift-version 4 %s -o %t/a.out
 // RUN: %target-run %t/a.out
 // REQUIRES: executable_test
@@ -92,6 +92,49 @@ AppKitTests.test("NSRectFills") {
   expectEqual(bitmapImage.colorAt(x: 0, y: 2), red)
   expectEqual(bitmapImage.colorAt(x: 1, y: 2), red)
   expectEqual(bitmapImage.colorAt(x: 2, y: 2), blue)
+}
+
+AppKitTests.test("NSColor.Literals") {
+  if #available(macOS 10.12, *) {
+    // Color literal in the extended sRGB color space.
+    let c1 = #colorLiteral(red: 1.358, green: -0.074, blue: -0.012, alpha: 1.0)
+    
+    var printedC1 = ""
+    print(c1, to: &printedC1)
+    expectTrue(printedC1.contains("extended"))
+  }
+}
+
+AppKitTests.test("NSLayoutPriority") {
+  let highPriority: NSLayoutConstraint.Priority = .defaultHigh
+
+  let adjustedPriority1 = highPriority + 1
+  let adjustedPriority1RawValue: Float = NSLayoutConstraint.Priority.defaultHigh.rawValue + 1
+  expectEqual(adjustedPriority1.rawValue, adjustedPriority1RawValue)
+
+  let adjustedPriority2 = highPriority - 5.0
+  let adjustedPriority2RawValue: Float = NSLayoutConstraint.Priority.defaultHigh.rawValue - 5.0
+  expectEqual(adjustedPriority2.rawValue, adjustedPriority2RawValue)
+
+  let adjustedPriority3 = 5.0 + highPriority
+  let adjustedPriority3RawValue: Float = 5.0 + NSLayoutConstraint.Priority.defaultHigh.rawValue
+  expectEqual(adjustedPriority3.rawValue, adjustedPriority3RawValue)
+
+  // Inferred typing from result type
+  let adjustedPriority4: NSLayoutConstraint.Priority = .defaultHigh + 2.0
+  let adjustedPriority4RawValue: Float = NSLayoutConstraint.Priority.defaultHigh.rawValue + 2.0
+  expectEqual(adjustedPriority4.rawValue, adjustedPriority4RawValue)
+
+  // Comparable
+  expectTrue(adjustedPriority1 > adjustedPriority2)
+  expectTrue(adjustedPriority2 < adjustedPriority1)
+
+  // Compound assignment
+  var variablePriority: NSLayoutConstraint.Priority = .defaultHigh
+  variablePriority += 1
+  variablePriority -= 5.0
+  let variablePriorityRawValue: Float = NSLayoutConstraint.Priority.defaultHigh.rawValue + 1 - 5.0
+  expectEqual(variablePriority.rawValue, variablePriorityRawValue)
 }
 
 runAllTests()

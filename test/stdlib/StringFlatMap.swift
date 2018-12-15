@@ -1,18 +1,12 @@
-// RUN: rm -rf %t ; mkdir -p %t
-// RUN: %target-build-swift %s -o %t/a.out3 -swift-version 3 && %target-run %t/a.out3
-// RUN: %target-build-swift %s -o %t/a.out4 -swift-version 4 && %target-run %t/a.out4
+// RUN: %empty-directory(%t)
+// RUN: %target-build-swift %s -o %t/a.out && %target-codesign %t/a.out && %target-run %t/a.out
+
+// REQUIRES: executable_test
 
 import StdlibUnittest
 
-#if swift(>=4)
 
 public typealias ExpectedResultType = [Character]
-
-#else
-
-public typealias ExpectedResultType = [String]
-
-#endif
 
 var Tests = TestSuite("StringFlatMap")
 
@@ -24,7 +18,7 @@ Tests.test("DefaultReturnType") {
 Tests.test("ExplicitTypeContext") {
   expectEqualSequence(["hello", "world"],
     ["hello", "world"].flatMap { $0 } as [String])
-  expectEqualSequence("helloworld".characters,
+  expectEqualSequence("helloworld",
     ["hello", "world"].flatMap { $0 } as [Character])
 }
 

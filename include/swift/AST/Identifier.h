@@ -17,6 +17,7 @@
 #ifndef SWIFT_AST_IDENTIFIER_H
 #define SWIFT_AST_IDENTIFIER_H
 
+#include "swift/Basic/EditorPlaceholder.h"
 #include "swift/Basic/LLVM.h"
 #include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/PointerUnion.h"
@@ -51,6 +52,8 @@ enum class DeclRefKind {
 /// ASTContext.  It just wraps a nul-terminated "const char*".
 class Identifier {
   friend class ASTContext;
+  friend class DeclBaseName;
+
   const char *Pointer;
   
   /// Constructor, only accessible by ASTContext, which handles the uniquing.
@@ -68,6 +71,8 @@ public:
   }
   
   bool empty() const { return Pointer == nullptr; }
+
+  bool is(StringRef string) const { return str().equals(string); }
   
   /// isOperator - Return true if this identifier is an operator, false if it is
   /// a normal identifier.
@@ -121,7 +126,7 @@ public:
   }
 
   static bool isEditorPlaceholder(StringRef name) {
-    return name.startswith("<#");
+    return swift::isEditorPlaceholder(name);
   }
 
   bool isEditorPlaceholder() const {
@@ -187,9 +192,9 @@ namespace llvm {
   };
   
   // An Identifier is "pointer like".
-  template<typename T> class PointerLikeTypeTraits;
+  template<typename T> struct PointerLikeTypeTraits;
   template<>
-  class PointerLikeTypeTraits<swift::Identifier> {
+  struct PointerLikeTypeTraits<swift::Identifier> {
   public:
     static inline void *getAsVoidPointer(swift::Identifier I) {
       return const_cast<void *>(I.getAsOpaquePointer());
@@ -207,6 +212,25 @@ namespace swift {
 /// Wrapper that may either be an Identifier or a special name
 /// (e.g. for subscripts)
 class DeclBaseName {
+public:
+  enum class Kind: uint8_t {
+    Normal,
+    Subscript,
+    Constructor,
+    Destructor
+  };
+  
+private:
+  /// In a special DeclName represenenting a subscript, this opaque pointer
+  /// is used as the data of the base name identifier.
+  /// This is an implementation detail that should never leak outside of
+  /// DeclName.
+  static void *SubscriptIdentifierData;
+  /// As above, for special constructor DeclNames.
+  static void *ConstructorIdentifierData;
+  /// As above, for special destructor DeclNames.
+  static void *DestructorIdentifierData;
+
   Identifier Ident;
 
 public:
@@ -214,7 +238,31 @@ public:
 
   DeclBaseName(Identifier I) : Ident(I) {}
 
-  bool isSpecial() const { return false; }
+  static DeclBaseName createSubscript() {
+    return DeclBaseName(Identifier((const char *)SubscriptIdentifierData));
+  }
+
+  static DeclBaseName createConstructor() {
+    return DeclBaseName(Identifier((const char *)ConstructorIdentifierData));
+  }
+
+  static DeclBaseName createDestructor() {
+    return DeclBaseName(Identifier((const char *)DestructorIdentifierData));
+  }
+
+  Kind getKind() const {
+    if (Ident.get() == SubscriptIdentifierData) {
+      return Kind::Subscript;
+    } else if (Ident.get() == ConstructorIdentifierData) {
+      return Kind::Constructor;
+    } else if (Ident.get() == DestructorIdentifierData) {
+        return Kind::Destructor;
+    } else {
+      return Kind::Normal;
+    }
+  }
+
+  bool isSpecial() const { return getKind() != Kind::Normal; }
 
   /// Return the identifier backing the name. Assumes that the name is not
   /// special.
@@ -233,13 +281,31 @@ public:
     return !isSpecial() && getIdentifier().isEditorPlaceholder();
   }
 
+  /// A representation of the name to be displayed to users. May be ambiguous
+  /// between identifiers and special names.
+  StringRef userFacingName() const {
+    if (empty())
+      return "_";
+
+    switch (getKind()) {
+    case Kind::Normal:
+      return getIdentifier().str();
+    case Kind::Subscript:
+      return "subscript";
+    case Kind::Constructor:
+      return "init";
+    case Kind::Destructor:
+      return "deinit";
+    }
+    llvm_unreachable("unhandled kind");
+  }
+
   int compare(DeclBaseName other) const {
-    // TODO: Sort special names cleverly
-    return getIdentifier().compare(other.getIdentifier());
+    return userFacingName().compare(other.userFacingName());
   }
 
   bool operator==(StringRef Str) const {
-    return !isSpecial() && getIdentifier().str() == Str;
+    return !isSpecial() && getIdentifier().is(Str);
   }
   bool operator!=(StringRef Str) const { return !(*this == Str); }
 
@@ -280,8 +346,8 @@ template<> struct DenseMapInfo<swift::DeclBaseName> {
 };
 
 // A DeclBaseName is "pointer like".
-template <typename T> class PointerLikeTypeTraits;
-template <> class PointerLikeTypeTraits<swift::DeclBaseName> {
+template <typename T> struct PointerLikeTypeTraits;
+template <> struct PointerLikeTypeTraits<swift::DeclBaseName> {
 public:
   static inline void *getAsVoidPointer(swift::DeclBaseName D) {
     return const_cast<void *>(D.getAsOpaquePointer());
@@ -320,7 +386,7 @@ class DeclName {
     MutableArrayRef<Identifier> getArgumentNames() {
       return {getTrailingObjects<Identifier>(), NumArgs};
     }
-      
+
     /// Uniquing for the ASTContext.
     static void Profile(llvm::FoldingSetNodeID &id, DeclBaseName baseName,
                         ArrayRef<Identifier> argumentNames);
@@ -425,14 +491,16 @@ public:
   /// True if this name is a simple one-component name equal to the
   /// given string.
   bool isSimpleName(StringRef name) const {
-    if (!isSimpleName())
-      return false;
-
-    if (getBaseName().isSpecial())
-      return false;
-
-    return getBaseIdentifier().str().equals(name);
+    return isSimpleName() && getBaseName() == name;
   }
+
+  /// True if this name is a compound name equal to the given base name and
+  /// argument names.
+  bool isCompoundName(DeclBaseName base, ArrayRef<StringRef> args) const;
+
+  /// True if this name is a compound name equal to the given normal
+  /// base name and argument names.
+  bool isCompoundName(StringRef base, ArrayRef<StringRef> args) const;
   
   /// True if this name is an operator.
   bool isOperator() const {
@@ -616,15 +684,15 @@ public:
   }
 
   friend bool operator<=(ObjCSelector lhs, ObjCSelector rhs) {
-    return lhs.compare(lhs) <= 0;
+    return lhs.compare(rhs) <= 0;
   }
 
   friend bool operator>(ObjCSelector lhs, ObjCSelector rhs) {
-    return lhs.compare(lhs) > 0;
+    return lhs.compare(rhs) > 0;
   }
 
   friend bool operator>=(ObjCSelector lhs, ObjCSelector rhs) {
-    return lhs.compare(lhs) >= 0;
+    return lhs.compare(rhs) >= 0;
   }
 };
 
@@ -632,9 +700,9 @@ public:
 
 namespace llvm {
   // A DeclName is "pointer like".
-  template<typename T> class PointerLikeTypeTraits;
+  template<typename T> struct PointerLikeTypeTraits;
   template<>
-  class PointerLikeTypeTraits<swift::DeclName> {
+  struct PointerLikeTypeTraits<swift::DeclName> {
   public:
     static inline void *getAsVoidPointer(swift::DeclName name) {
       return name.getOpaqueValue();
@@ -662,9 +730,9 @@ namespace llvm {
   };
 
   // An ObjCSelector is "pointer like".
-  template<typename T> class PointerLikeTypeTraits;
+  template<typename T> struct PointerLikeTypeTraits;
   template<>
-  class PointerLikeTypeTraits<swift::ObjCSelector> {
+  struct PointerLikeTypeTraits<swift::ObjCSelector> {
   public:
     static inline void *getAsVoidPointer(swift::ObjCSelector name) {
       return name.getOpaqueValue();

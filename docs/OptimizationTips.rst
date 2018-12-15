@@ -21,7 +21,7 @@ Enabling Optimizations
 ======================
 
 The first thing one should always do is to enable optimization. Swift provides
-three different optimization levels:
+four different optimization levels:
 
 - ``-Onone``: This is meant for normal development. It performs minimal
   optimizations and preserves all debug info.
@@ -35,6 +35,8 @@ three different optimization levels:
   result in undetected memory safety issues and integer overflows. Only use this
   if you have carefully reviewed that your code is safe with respect to integer
   overflow and type casts.
+- ``-Osize``: This is a special optimization mode where the compiler prioritizes
+  code size over performance.
 
 In the Xcode UI, one can modify the current optimization level as follows:
 
@@ -444,7 +446,7 @@ construct such a data structure:
       var value: T {
           get { return ref.val }
           set {
-            if (!isUniquelyReferencedNonObjC(&ref)) {
+            if (!isKnownUniquelyReferenced(&ref)) {
               ref = Ref(newValue)
               return
             }
@@ -538,7 +540,7 @@ protocols as class-only protocols to get better runtime performance.
 
 ::
 
-  protocol Pingable : class { func ping() -> Int }
+  protocol Pingable : AnyObject { func ping() -> Int }
 
 .. https://developer.apple.com/library/ios/documentation/Swift/Conceptual/Swift_Programming_Language/Protocols.html
 

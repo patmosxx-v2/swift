@@ -33,7 +33,7 @@
 static char **_swift_stdlib_ProcessOverrideUnsafeArgv = nullptr;
 static int _swift_stdlib_ProcessOverrideUnsafeArgc = 0;
 
-SWIFT_RUNTIME_STDLIB_INTERFACE
+SWIFT_RUNTIME_STDLIB_API
 void _swift_stdlib_overrideUnsafeArgvArgc(char **argv, int argc) {
   _swift_stdlib_ProcessOverrideUnsafeArgv = argv;
   _swift_stdlib_ProcessOverrideUnsafeArgc = argc;
@@ -45,7 +45,7 @@ void _swift_stdlib_overrideUnsafeArgvArgc(char **argv, int argc) {
 extern "C" char ***_NSGetArgv(void);
 extern "C" int *_NSGetArgc(void);
 
-SWIFT_RUNTIME_STDLIB_INTERFACE
+SWIFT_RUNTIME_STDLIB_API
 char ** _swift_stdlib_getUnsafeArgvArgc(int *outArgLen) {
   assert(outArgLen != nullptr);
 
@@ -58,7 +58,7 @@ char ** _swift_stdlib_getUnsafeArgvArgc(int *outArgLen) {
   return *_NSGetArgv();
 }
 #elif defined(__linux__) || defined(__CYGWIN__)
-SWIFT_RUNTIME_STDLIB_INTERFACE
+SWIFT_RUNTIME_STDLIB_API
 char ** _swift_stdlib_getUnsafeArgvArgc(int *outArgLen) {
   assert(outArgLen != nullptr);
 
@@ -70,7 +70,7 @@ char ** _swift_stdlib_getUnsafeArgvArgc(int *outArgLen) {
   FILE *cmdline = fopen("/proc/self/cmdline", "rb");
   if (!cmdline) {
     swift::fatalError(0,
-            "fatal error: Unable to open interface to '/proc/self/cmdline'.\n");
+            "Fatal error: Unable to open interface to '/proc/self/cmdline'.\n");
   }
   char *arg = nullptr;
   size_t size = 0;
@@ -92,7 +92,7 @@ char ** _swift_stdlib_getUnsafeArgvArgc(int *outArgLen) {
 #elif defined (_WIN32)
 #include <stdlib.h>
 
-SWIFT_RUNTIME_STDLIB_INTERFACE
+SWIFT_RUNTIME_STDLIB_API
 char ** _swift_stdlib_getUnsafeArgvArgc(int *outArgLen) {
   assert(outArgLen != nullptr);
 
@@ -111,7 +111,7 @@ char ** _swift_stdlib_getUnsafeArgvArgc(int *outArgLen) {
 #include <sys/param.h>
 #include <sys/sysctl.h>
 
-SWIFT_RUNTIME_STDLIB_INTERFACE
+SWIFT_RUNTIME_STDLIB_API
 char ** _swift_stdlib_getUnsafeArgvArgc(int *outArgLen) {
   assert(outArgLen != nullptr);
 
@@ -137,7 +137,7 @@ char ** _swift_stdlib_getUnsafeArgvArgc(int *outArgLen) {
     }
   }
   if (!argPtr)
-    swift::fatalError(0, "fatal error: could not retrieve commandline "
+    swift::fatalError(0, "Fatal error: Could not retrieve commandline "
                          "arguments: sysctl: %s.\n", strerror(errno));
 
   char *curPtr = argPtr;
@@ -156,7 +156,7 @@ char ** _swift_stdlib_getUnsafeArgvArgc(int *outArgLen) {
   return outBuf;
 }
 #else // __ANDROID__; Add your favorite arch's command line arg grabber here.
-SWIFT_RUNTIME_STDLIB_INTERFACE
+SWIFT_RUNTIME_STDLIB_API
 char ** _swift_stdlib_getUnsafeArgvArgc(int *outArgLen) {
   if (_swift_stdlib_ProcessOverrideUnsafeArgv) {
     *outArgLen = _swift_stdlib_ProcessOverrideUnsafeArgc;
@@ -164,7 +164,7 @@ char ** _swift_stdlib_getUnsafeArgvArgc(int *outArgLen) {
   }
   
   swift::fatalError(0,
-      "fatal error: Command line arguments not supported on this platform.\n");
+      "Fatal error: Command line arguments not supported on this platform.\n");
 }
 #endif
 

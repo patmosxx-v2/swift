@@ -9,13 +9,13 @@ protocol FooProtocol {}
 func garbage() -> () {
   var a : Int
   ] this line is invalid, but we will stop at the keyword below... // expected-error{{expected expression}}
-  return a + "a" // expected-error{{binary operator '+' cannot be applied to operands of type 'Int' and 'String'}} expected-note {{overloads for '+' exist with these partially matching parameter lists: (Int, Int), (String, String), (Int, UnsafeMutablePointer<Pointee>), (Int, UnsafePointer<Pointee>)}}
+  return a + "a" // expected-error{{binary operator '+' cannot be applied to operands of type 'Int' and 'String'}} expected-note {{overloads for '+' exist with these partially matching parameter lists: (Int, Int), (String, String)}}
 }
 
 func moreGarbage() -> () {
   ) this line is invalid, but we will stop at the declaration... // expected-error{{expected expression}}
   func a() -> Int { return 4 }
-  return a() + "a" // expected-error{{binary operator '+' cannot be applied to operands of type 'Int' and 'String'}} expected-note {{overloads for '+' exist with these partially matching parameter lists: (Int, Int), (String, String), (Int, UnsafeMutablePointer<Pointee>), (Int, UnsafePointer<Pointee>)}}
+  return a() + "a" // expected-error{{binary operator '+' cannot be applied to operands of type 'Int' and 'String'}} expected-note {{overloads for '+' exist with these partially matching parameter lists: (Int, Int), (String, String)}}
 }
 
 
@@ -33,7 +33,9 @@ func useContainer() -> () {
   func exists() -> Bool { return true }
 }
 
-func test(a: BadAttributes) -> () { // expected-note * {{did you mean 'test'?}}
+// expected-note @+2 {{did you mean 'test'?}}
+// expected-note @+1 {{'test' declared here}}
+func test(a: BadAttributes) -> () {
   _ = a.exists() // no-warning
 }
 
@@ -128,7 +130,7 @@ func missingControllingExprInRepeatWhile() {
   }
 
   repeat {
-  } while { true }() // expected-error{{missing condition in a 'while' statement}} expected-error{{consecutive statements on a line must be separated by ';'}} {{10-10=;}} expected-warning {{result of call is unused, but produces 'Bool'}}
+  } while { true }() // expected-error{{missing condition in a 'while' statement}} expected-error{{consecutive statements on a line must be separated by ';'}} {{10-10=;}} expected-warning {{result of call to closure returning 'Bool' is unused}}
 }
 
 // SR-165
@@ -140,64 +142,93 @@ func missingWhileInRepeat() {
 func acceptsClosure<T>(t: T) -> Bool { return true }
 
 func missingControllingExprInFor() {
-  for // expected-error {{expected initialization in a 'for' statement}}
-
-  for { // expected-error {{missing initialization in a 'for' statement}}
+  for ; { // expected-error {{C-style for statement has been removed in Swift 3}}
   }
 
-  for // expected-error {{missing initialization in a 'for' statement}}
-  {
+  for ; // expected-error {{C-style for statement has been removed in Swift 3}}
+  { 
   }
 
-  for var i { // expected-error 2{{expected ';' in 'for' statement}} expected-error {{type annotation missing in pattern}}
+  for ; true { // expected-error {{C-style for statement has been removed in Swift 3}}
   }
 
-  for ; { // expected-error {{expected ';' in 'for' statement}}
+  for var i = 0; true { // expected-error {{C-style for statement has been removed in Swift 3}}
+    i += 1
   }
-
-  // FIXME: it would be better if this diagnostic appeared on the previous line.
-  for ;
-  { // expected-error {{expected ';' in 'for' statement}}
-  }
-
-  for ; true { // expected-error {{expected ';' in 'for' statement}}
-  }
-
-  for var i = 0; true { // expected-error {{expected ';' in 'for' statement}}
-  }
-
- 
-// The #if block is used to provide a scope for the for stmt to force it to end
-// where necessary to provoke the crash.
-#if true  // <rdar://problem/21679557> compiler crashes on "for{{"
-  // expected-error @+2 {{missing initialization in a 'for' statement}}
-  // expected-note @+1 2 {{to match this opening '{'}}
-for{{ // expected-error {{expression resolves to an unused function}}
-#endif  // expected-error 2 {{expected '}' at end of closure}}
-  
-#if true
-  // expected-error @+1 {{missing initialization in a 'for' statement}}
-  for{
-    var x = 42
-  }
-#endif
-
 }
 
 func missingControllingExprInForEach() {
-  for in { // expected-error {{expected pattern}} expected-error {{expected Sequence expression for for-each loop}}
-  }
+  // expected-error @+3 {{expected pattern}}
+  // expected-error @+2 {{expected Sequence expression for for-each loop}}
+  // expected-error @+1 {{expected '{' to start the body of for-each loop}}
+  for
 
-
-  // expected-error @+4 {{expected 'in' after for-each pattern}}
-  // expected-error @+3 {{expected '{' to start the body of for-each loop}}
   // expected-error @+2 {{expected pattern}}
   // expected-error @+1 {{expected Sequence expression for for-each loop}}
-  for for in { // expected-error {{expected pattern}} expected-error {{expected Sequence expression for for-each loop}}
+  for {
+  }
+
+  // expected-error @+2 {{expected pattern}}
+  // expected-error @+1 {{expected Sequence expression for for-each loop}}
+  for
+  {
+  }
+
+  // expected-error @+2 {{expected 'in' after for-each pattern}}
+  // expected-error @+1 {{expected Sequence expression for for-each loop}}
+  for i {
+  }
+
+  // expected-error @+2 {{expected 'in' after for-each pattern}}
+  // expected-error @+1 {{expected Sequence expression for for-each loop}}
+  for var i {
+  }
+
+  // expected-error @+2 {{expected pattern}}
+  // expected-error @+1 {{expected Sequence expression for for-each loop}}
+  for in {
+  }
+
+  // expected-error @+1 {{expected pattern}}
+  for 0..<12 {
+  }
+
+  // expected-error @+3 {{expected pattern}}
+  // expected-error @+2 {{expected Sequence expression for for-each loop}}
+  // expected-error @+1 {{expected '{' to start the body of for-each loop}}
+  for for in {
   }
 
   for i in { // expected-error {{expected Sequence expression for for-each loop}}
   }
+
+// The #if block is used to provide a scope for the for stmt to force it to end
+// where necessary to provoke the crash.
+#if true  // <rdar://problem/21679557> compiler crashes on "for{{"
+  // expected-error @+2 {{expected pattern}}
+  // expected-error @+1 {{expected Sequence expression for for-each loop}}
+  for{{ // expected-note 2 {{to match this opening '{'}}
+#endif  // expected-error {{expected '}' at end of closure}} expected-error {{expected '}' at end of brace statement}}
+
+#if true
+  // expected-error @+2 {{expected pattern}}
+  // expected-error @+1 {{expected Sequence expression for for-each loop}}
+  for{
+    var x = 42
+  }
+#endif
+  
+  // SR-5943
+  struct User { let name: String? }
+  let users = [User]()
+  for user in users whe { // expected-error {{expected '{' to start the body of for-each loop}}
+    if let name = user.name {
+      let key = "\(name)"
+    }
+  }
+
+  for // expected-error {{expected pattern}} expected-error {{Sequence expression for for-each loop}}
+  ; // expected-error {{expected '{' to start the body of for-each loop}}
 }
 
 func missingControllingExprInSwitch() {
@@ -435,7 +466,7 @@ struct ErrorInFunctionSignatureResultArrayType1 {
 
 struct ErrorInFunctionSignatureResultArrayType2 {
   func foo() -> Int[0 { // expected-error {{expected ']' in array type}} expected-note {{to match this opening '['}}
-    return [0]  // expected-error {{contextual type 'Int' cannot be used with array literal}}
+    return [0]  // expected-error {{cannot convert return expression of type '[Int]' to return type 'Int'}}
   }
 }
 
@@ -460,7 +491,7 @@ struct ErrorInFunctionSignatureResultArrayType5 {
 
 
 struct ErrorInFunctionSignatureResultArrayType11 { // expected-note{{in declaration of 'ErrorInFunctionSignatureResultArrayType11'}}
-  func foo() -> Int[(a){a++}] { // expected-error {{consecutive declarations on a line must be separated by ';'}} {{29-29=;}} expected-error {{expected ']' in array type}} expected-note {{to match this opening '['}} expected-error {{use of unresolved identifier 'a'}} expected-error {{expected declaration}}
+  func foo() -> Int[(a){a++}] { // expected-error {{consecutive declarations on a line must be separated by ';'}} {{29-29=;}} expected-error {{expected ']' in array type}} expected-note {{to match this opening '['}} expected-error {{use of unresolved operator '++'; did you mean '+= 1'?}} expected-error {{use of unresolved identifier 'a'}} expected-error {{expected declaration}}
   }
 }
 
@@ -526,8 +557,39 @@ class WrongDeclIntroducerKeyword1 { // expected-note{{in declaration of 'WrongDe
   class func bar() {}
 }
 
+//===--- Recovery for wrong inheritance clause.
+
+class Base2<T> {
+}
+
+class SubModule {
+    class Base1 {}
+    class Base2<T> {}
+}
+
+// expected-error@+1 {{expected ':' to begin inheritance clause}} {{30-31=: }} {{34-35=}}    
+class WrongInheritanceClause1(Int) {}           
+
+// expected-error@+1 {{expected ':' to begin inheritance clause}} {{30-31=: }} {{41-42=}}
+class WrongInheritanceClause2(Base2<Int>) {}
+
+// expected-error@+1 {{expected ':' to begin inheritance clause}} {{33-34=: }} {{49-50=}}
+class WrongInheritanceClause3<T>(SubModule.Base1) where T:AnyObject {}
+
+// expected-error@+1 {{expected ':' to begin inheritance clause}} {{30-31=: }} {{51-52=}}
+class WrongInheritanceClause4(SubModule.Base2<Int>) {}
+
+// expected-error@+1 {{expected ':' to begin inheritance clause}} {{33-34=: }} {{54-55=}}
+class WrongInheritanceClause5<T>(SubModule.Base2<Int>) where T:AnyObject {}
+
+// expected-error@+1 {{expected ':' to begin inheritance clause}} {{30-31=: }} 
+class WrongInheritanceClause6(Int {}
+
+// expected-error@+1 {{expected ':' to begin inheritance clause}} {{33-34=: }} 
+class WrongInheritanceClause7<T>(Int where T:AnyObject {}
+
 // <rdar://problem/18502220> [swift-crashes 078] parser crash on invalid cast in sequence expr
-Base=1 as Base=1  // expected-error {{cannot assign to immutable expression of type 'Base'}}
+Base=1 as Base=1  // expected-error {{cannot assign to immutable expression of type 'Base.Type'}}
 
 
 
@@ -557,7 +619,7 @@ func foo1(bar!=baz) {} // expected-note {{did you mean 'foo1'?}}
 func foo2(bar! = baz) {}// expected-note {{did you mean 'foo2'?}}
 
 // rdar://19605567
-// expected-error@+1{{use of unresolved identifier 'esp'}}
+// expected-error@+1{{use of unresolved identifier 'esp'; did you mean 'test'?}}
 switch esp {
 case let (jeb):
   // expected-error@+5{{operator with postfix spacing cannot start a subexpression}}
@@ -595,6 +657,9 @@ struct InitializerWithName {
 
 struct InitializerWithNameAndParam {
   init a(b: Int) {} // expected-error {{initializers cannot have a name}} {{8-9=}}
+  init? c(_ d: Int) {} // expected-error {{initializers cannot have a name}} {{9-10=}}
+  init e<T>(f: T) {} // expected-error {{initializers cannot have a name}} {{8-9=}}
+  init? g<T>(_: T) {} // expected-error {{initializers cannot have a name}} {{9-10=}}
 }
 
 struct InitializerWithLabels {
@@ -720,7 +785,7 @@ func test23550816(ss: [String], s: String) {
 // <rdar://problem/23719432> [practicalswift] Compiler crashes on &(Int:_)
 func test23719432() {
   var x = 42
-  &(Int:x)  // expected-error {{expression type 'inout _' is ambiguous without more context}}
+  &(Int:x) // expected-error {{use of extraneous '&'}}
 }
 
 // <rdar://problem/19911096> QoI: terrible recovery when using '·' for an operator

@@ -30,7 +30,7 @@ getSelfParameterConvention(ApplyInst *SemanticsCall) {
   return FnTy->getSelfParameter().getConvention();
 }
 
-/// \brief Make sure that all parameters are passed with a reference count
+/// Make sure that all parameters are passed with a reference count
 /// neutral parameter convention except for self.
 bool swift::ArraySemanticsCall::isValidSignature() {
   assert(SemanticsCall && getKind() != ArrayCallKind::kNone &&
@@ -84,16 +84,9 @@ bool swift::ArraySemanticsCall::isValidSignature() {
       auto *AllocBufferAI = dyn_cast<ApplyInst>(Arg0);
       if (!AllocBufferAI)
         return false;
-
       auto *AllocFn = AllocBufferAI->getReferencedFunction();
-      if (!AllocFn)
-        return false;
-
-      StringRef AllocFuncName = AllocFn->getName();
-      if (AllocFuncName != "swift_bufferAllocate")
-        return false;
-
-      if (!hasOneNonDebugUse(AllocBufferAI))
+      if (!AllocFn || AllocFn->getName() != "swift_bufferAllocate" ||
+          !hasOneNonDebugUse(AllocBufferAI))
         return false;
     }
     return true;
@@ -112,27 +105,52 @@ bool swift::ArraySemanticsCall::isValidSignature() {
 }
 
 /// Match array semantic calls.
-swift::ArraySemanticsCall::ArraySemanticsCall(ValueBase *V,
-                                              StringRef SemanticStr,
-                                              bool MatchPartialName) {
-  if (auto *AI = dyn_cast<ApplyInst>(V))
-    if (auto *Fn = AI->getReferencedFunction())
-      if ((MatchPartialName &&
-           Fn->hasSemanticsAttrThatStartsWith(SemanticStr)) ||
-          (!MatchPartialName && Fn->hasSemanticsAttr(SemanticStr))) {
-        SemanticsCall = AI;
-        // Need a 'self' argument otherwise this is not a semantic call that
-        // we recognize.
-        if (getKind() < ArrayCallKind::kArrayInit && !hasSelf())
-          SemanticsCall = nullptr;
+swift::ArraySemanticsCall::ArraySemanticsCall(SILValue V,
+                                              StringRef semanticName,
+                                              bool matchPartialName)
+    : SemanticsCall(nullptr) {
+  if (auto AI = dyn_cast<ApplyInst>(V))
+    initialize(AI, semanticName, matchPartialName);
+}
 
-        // A arguments must be passed reference count neutral except for self.
-        if (SemanticsCall && !isValidSignature())
-          SemanticsCall = nullptr;
-        return;
-      }
-  // Otherwise, this is not the semantic call we are looking for.
-  SemanticsCall = nullptr;
+/// Match array semantic calls.
+swift::ArraySemanticsCall::ArraySemanticsCall(SILInstruction *I,
+                                              StringRef semanticName,
+                                              bool matchPartialName)
+    : SemanticsCall(nullptr) {
+  if (auto AI = dyn_cast<ApplyInst>(I))
+    initialize(AI, semanticName, matchPartialName);
+}
+
+/// Match array semantic calls.
+swift::ArraySemanticsCall::ArraySemanticsCall(ApplyInst *AI,
+                                              StringRef semanticName,
+                                              bool matchPartialName)
+    : SemanticsCall(nullptr) {
+  initialize(AI, semanticName, matchPartialName);
+}
+
+void ArraySemanticsCall::initialize(ApplyInst *AI, StringRef semanticName,
+                                    bool matchPartialName) {
+  auto *fn = AI->getReferencedFunction();
+  if (!fn)
+    return;
+
+  if (!(matchPartialName
+          ? fn->hasSemanticsAttrThatStartsWith(semanticName)
+          : fn->hasSemanticsAttr(semanticName)))
+    return;
+
+  SemanticsCall = AI;
+
+  // Need a 'self' argument otherwise this is not a semantic call that
+  // we recognize.
+  if (getKind() < ArrayCallKind::kArrayInit && !hasSelf())
+    SemanticsCall = nullptr;
+
+  // A arguments must be passed reference count neutral except for self.
+  if (SemanticsCall && !isValidSignature())
+    SemanticsCall = nullptr;
 }
 
 /// Determine which kind of array semantics call this is.
@@ -157,7 +175,6 @@ ArrayCallKind swift::ArraySemanticsCall::getKind() const {
             .Case("array.get_count", ArrayCallKind::kGetCount)
             .Case("array.get_capacity", ArrayCallKind::kGetCapacity)
             .Case("array.get_element", ArrayCallKind::kGetElement)
-            .Case("array.owner", ArrayCallKind::kGetArrayOwner)
             .Case("array.make_mutable", ArrayCallKind::kMakeMutable)
             .Case("array.get_element_address",
                   ArrayCallKind::kGetElementAddress)
@@ -347,7 +364,7 @@ static SILValue copyArrayLoad(SILValue ArrayStructValue,
     InsertPt = Inst;
   }
 
-  return LI->clone(InsertBefore);
+  return cast<LoadInst>(LI->clone(InsertBefore));
 }
 
 static ApplyInst *hoistOrCopyCall(ApplyInst *AI, SILInstruction *InsertBefore,
@@ -363,7 +380,7 @@ static ApplyInst *hoistOrCopyCall(ApplyInst *AI, SILInstruction *InsertBefore,
 }
 
 
-/// \brief Hoist or copy the self argument of the semantics call.
+/// Hoist or copy the self argument of the semantics call.
 /// Return the hoisted self argument.
 static SILValue hoistOrCopySelf(ApplyInst *SemanticsCall,
                                 SILInstruction *InsertBefore,
@@ -699,7 +716,7 @@ bool swift::ArraySemanticsCall::replaceByValue(SILValue V) {
 
 bool swift::ArraySemanticsCall::replaceByAppendingValues(
     SILModule &M, SILFunction *AppendFn, SILFunction *ReserveFn,
-    const SmallVectorImpl<SILValue> &Vals, ArrayRef<Substitution> Subs) {
+    const SmallVectorImpl<SILValue> &Vals, SubstitutionMap Subs) {
   assert(getKind() == ArrayCallKind::kAppendContentsOf &&
          "Must be an append_contentsOf call");
   assert(AppendFn && "Must provide an append SILFunction");
@@ -714,12 +731,13 @@ bool swift::ArraySemanticsCall::replaceByAppendingValues(
   SILValue ArrRef = SemanticsCall->getArgument(1);
   SILBuilderWithScope Builder(SemanticsCall);
   auto Loc = SemanticsCall->getLoc();
-  auto *FnRef = Builder.createFunctionRef(Loc, AppendFn);
+  auto *FnRef = Builder.createFunctionRefFor(Loc, AppendFn);
 
   if (Vals.size() > 1) {
     // Create a call to reserveCapacityForAppend() to reserve space for multiple
     // elements.
-    FunctionRefInst *ReserveFnRef = Builder.createFunctionRef(Loc, ReserveFn);
+    FunctionRefBaseInst *ReserveFnRef =
+        Builder.createFunctionRefFor(Loc, ReserveFn);
     SILFunctionType *ReserveFnTy =
       ReserveFnRef->getType().castTo<SILFunctionType>();
     assert(ReserveFnTy->getNumParameters() == 2);

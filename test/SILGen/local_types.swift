@@ -1,5 +1,5 @@
-// RUN: %target-swift-frontend  -parse-as-library -emit-silgen %s -verify | %FileCheck %s
-// RUN: %target-swift-frontend  -parse-as-library -emit-ir %s
+// RUN: %target-swift-emit-silgen  -parse-as-library -enable-sil-ownership %s -verify | %FileCheck %s
+// RUN: %target-swift-emit-ir  -parse-as-library -enable-sil-ownership %s
 
 func function() {
   return

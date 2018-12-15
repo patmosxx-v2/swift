@@ -1,20 +1,38 @@
 // RUN: %empty-directory(%t)
 
-// RUN: %target-build-swift -emit-library -Xfrontend -enable-resilience -c %S/../Inputs/resilient_struct.swift -o %t/resilient_struct.o
-// RUN: %target-build-swift -emit-module -Xfrontend -enable-resilience -c %S/../Inputs/resilient_struct.swift -o %t/resilient_struct.o
+// RUN: %target-build-swift-dylib(%t/%target-library-name(resilient_struct)) -Xfrontend -enable-resilience -Xfrontend -enable-class-resilience %S/../Inputs/resilient_struct.swift -emit-module -emit-module-path %t/resilient_struct.swiftmodule -module-name resilient_struct
+// RUN: %target-codesign %t/%target-library-name(resilient_struct)
 
-// RUN: %target-build-swift -emit-library -Xfrontend -enable-resilience -c %S/../Inputs/resilient_class.swift -I %t/ -o %t/resilient_class.o
-// RUN: %target-build-swift -emit-module -Xfrontend -enable-resilience -c %S/../Inputs/resilient_class.swift -I %t/ -o %t/resilient_class.o
+// RUN: %target-build-swift-dylib(%t/%target-library-name(resilient_class)) -Xfrontend -enable-resilience -Xfrontend -enable-class-resilience %S/../Inputs/resilient_class.swift -emit-module -emit-module-path %t/resilient_class.swiftmodule -module-name resilient_class -I%t -L%t -lresilient_struct
+// RUN: %target-codesign %t/%target-library-name(resilient_class)
 
-// RUN: %target-build-swift %s -Xlinker %t/resilient_struct.o -Xlinker %t/resilient_class.o -I %t -L %t -o %t/main
+// RUN: %target-build-swift-dylib(%t/%target-library-name(fixed_layout_class)) -Xfrontend -enable-resilience -Xfrontend -enable-class-resilience %S/../Inputs/fixed_layout_class.swift -emit-module -emit-module-path %t/fixed_layout_class.swiftmodule -module-name fixed_layout_class -I%t -L%t -lresilient_struct
+// RUN: %target-codesign %t/%target-library-name(fixed_layout_class)
 
-// RUN: %target-run %t/main
+// RUN: %target-build-swift %s -L %t -I %t -lresilient_struct -lresilient_class -lfixed_layout_class -o %t/main -Xfrontend -enable-class-resilience -Xlinker -rpath -Xlinker %t
+// RUN: %target-codesign %t/main
+
+// RUN: %target-run %t/main %t/%target-library-name(resilient_struct) %t/%target-library-name(resilient_class) %t/%target-library-name(fixed_layout_class)
+
+// RUN: %target-build-swift-dylib(%t/%target-library-name(resilient_struct_wmo)) -Xfrontend -enable-resilience -Xfrontend -enable-class-resilience %S/../Inputs/resilient_struct.swift -emit-module -emit-module-path %t/resilient_struct.swiftmodule -module-name resilient_struct -whole-module-optimization
+// RUN: %target-codesign %t/%target-library-name(resilient_struct_wmo)
+
+// RUN: %target-build-swift-dylib(%t/%target-library-name(resilient_class_wmo)) -Xfrontend -enable-resilience -Xfrontend -enable-class-resilience %S/../Inputs/resilient_class.swift -emit-module -emit-module-path %t/resilient_class.swiftmodule -module-name resilient_class -I%t -L%t -lresilient_struct_wmo -whole-module-optimization
+// RUN: %target-codesign %t/%target-library-name(resilient_class_wmo)
+
+// RUN: %target-build-swift-dylib(%t/%target-library-name(fixed_layout_class_wmo)) -Xfrontend -enable-resilience -Xfrontend -enable-class-resilience %S/../Inputs/fixed_layout_class.swift -emit-module -emit-module-path %t/fixed_layout_class.swiftmodule -module-name fixed_layout_class -I%t -L%t -lresilient_struct_wmo -whole-module-optimization
+// RUN: %target-codesign %t/%target-library-name(fixed_layout_class_wmo)
+
+// RUN: %target-build-swift %s -L %t -I %t -lresilient_struct_wmo -lresilient_class_wmo -lfixed_layout_class_wmo -Xfrontend -enable-class-resilience -o %t/main2 -Xlinker -rpath -Xlinker %t -module-name main
+// RUN: %target-codesign %t/main2
+
+// RUN: %target-run %t/main2 %t/%target-library-name(resilient_struct_wmo) %t/%target-library-name(resilient_class_wmo) %t/%target-library-name(fixed_layout_class_wmo)
 
 // REQUIRES: executable_test
 
 import StdlibUnittest
 
-
+import fixed_layout_class
 import resilient_class
 import resilient_struct
 
@@ -57,6 +75,23 @@ ResilientClassTestSuite.test("ClassWithResilientProperty") {
   // Make sure the conformance works
   expectEqual(getS(c).w, 30)
   expectEqual(getS(c).h, 40)
+}
+
+ResilientClassTestSuite.test("OutsideClassWithResilientProperty") {
+  let c = OutsideParentWithResilientProperty(
+      p: Point(x: 10, y: 20),
+      s: Size(w: 30, h: 40),
+      color: 50)
+
+  expectEqual(c.p.x, 10)
+  expectEqual(c.p.y, 20)
+  expectEqual(c.s.w, 30)
+  expectEqual(c.s.h, 40)
+  expectEqual(c.color, 50)
+
+  expectEqual(0, c.laziestNumber)
+  c.laziestNumber = 1
+  expectEqual(1, c.laziestNumber)
 }
 
 
@@ -181,9 +216,6 @@ ResilientClassTestSuite.test("ResilientOutsideParent") {
 }
 
 
-// FIXME: needs indirect metadata access
-
-#if false
 // Concrete subclass of resilient class
 
 public class ChildOfResilientOutsideParent : ResilientOutsideParent {
@@ -234,8 +266,17 @@ ResilientClassTestSuite.test("ChildOfResilientOutsideParentWithResilientStoredPr
   expectEqual(c.s.h, 40)
   expectEqual(c.color, 50)
 }
-#endif
 
+class ChildWithMethodOverride : ResilientOutsideParent {
+  override func getValue() -> Int {
+    return 1
+  }
+}
+
+ResilientClassTestSuite.test("ChildWithMethodOverride") {
+  let c = ChildWithMethodOverride()
+  expectEqual(c.getValue(), 1)
+}
 
 ResilientClassTestSuite.test("TypeByName") {
   expectTrue(_typeByName("main.ClassWithResilientProperty")

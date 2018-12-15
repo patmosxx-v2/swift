@@ -38,10 +38,10 @@
 
 import SwiftPrivate
 import SwiftPrivateLibcExtras
-import SwiftPrivatePthreadExtras
-#if os(OSX) || os(iOS)
+import SwiftPrivateThreadExtras
+#if os(macOS) || os(iOS)
 import Darwin
-#elseif os(Linux) || os(FreeBSD) || os(PS4) || os(Android) || CYGWIN
+#elseif os(Linux) || os(FreeBSD) || os(PS4) || os(Android) || os(Cygwin) || os(Haiku)
 import Glibc
 #endif
 
@@ -440,7 +440,7 @@ func _masterThreadOneTrial<RT>(_ sharedState: _RaceTestSharedState<RT>) {
     let workerState = _RaceTestWorkerState<RT>()
 
     // Shuffle the data so that threads process it in different order.
-    let shuffle = randomShuffle(identityShuffle)
+    let shuffle = identityShuffle.shuffled()
     workerState.raceData = scatter(sharedState.raceData, shuffle)
     workerState.raceDataShuffle = shuffle
 
@@ -605,38 +605,35 @@ public func runRaceTest<RT : RaceTestWithPerTrialData>(
 
   // Create the master thread.
   do {
-    let (ret, tid) = _stdlib_pthread_create_block(
-      nil, masterThreadBody, ())
+    let (ret, tid) = _stdlib_thread_create_block(masterThreadBody, ())
     expectEqual(0, ret)
     testTids.append(tid!)
   }
 
   // Create racing threads.
   for i in 0..<racingThreadCount {
-    let (ret, tid) = _stdlib_pthread_create_block(
-      nil, racingThreadBody, i)
+    let (ret, tid) = _stdlib_thread_create_block(racingThreadBody, i)
     expectEqual(0, ret)
     testTids.append(tid!)
   }
 
   // Create the alarm thread that enforces the timeout.
   do {
-    let (ret, tid) = _stdlib_pthread_create_block(
-      nil, alarmThreadBody, ())
+    let (ret, tid) = _stdlib_thread_create_block(alarmThreadBody, ())
     expectEqual(0, ret)
     alarmTid = tid!
   }
 
   // Join all testing threads.
   for tid in testTids {
-    let (ret, _) = _stdlib_pthread_join(tid, Void.self)
+    let (ret, _) = _stdlib_thread_join(tid, Void.self)
     expectEqual(0, ret)
   }
 
   // Tell the alarm thread to stop if it hasn't already, then join it.
   do {
     alarmTimer.wake()
-    let (ret, _) = _stdlib_pthread_join(alarmTid, Void.self)
+    let (ret, _) = _stdlib_thread_join(alarmTid, Void.self)
     expectEqual(0, ret)
   }
 

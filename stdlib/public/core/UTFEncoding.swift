@@ -17,17 +17,18 @@
 
 
 public protocol _UTFParser {
-  associatedtype Encoding : _UnicodeEncoding_
+  associatedtype Encoding : _UnicodeEncoding
 
   func _parseMultipleCodeUnits() -> (isValid: Bool, bitCount: UInt8)
   func _bufferedScalar(bitCount: UInt8) -> Encoding.EncodedScalar
   
-  var _buffer: _UIntBuffer<UInt32, Encoding.CodeUnit> { get set }
+  var _buffer: _UIntBuffer<Encoding.CodeUnit> { get set }
 }
 
 extension _UTFParser
 where Encoding.EncodedScalar : RangeReplaceableCollection {
 
+  @inlinable
   @inline(__always)
   public mutating func parseScalar<I : IteratorProtocol>(
     from input: inout I
@@ -44,11 +45,11 @@ where Encoding.EncodedScalar : RangeReplaceableCollection {
       // Non-ASCII, proceed to buffering mode.
       _buffer.append(codeUnit)
     } else if Encoding._isScalar(
-      Encoding.CodeUnit(extendingOrTruncating: _buffer._storage)
+      Encoding.CodeUnit(truncatingIfNeeded: _buffer._storage)
     ) {
       // ASCII in _buffer.  We don't refill the buffer so we can return
       // to bufferless mode once we've exhausted it.
-      let codeUnit = Encoding.CodeUnit(extendingOrTruncating: _buffer._storage)
+      let codeUnit = Encoding.CodeUnit(truncatingIfNeeded: _buffer._storage)
       _buffer.remove(at: _buffer.startIndex)
       return .valid(Encoding.EncodedScalar(CollectionOfOne(codeUnit)))
     }
@@ -65,16 +66,16 @@ where Encoding.EncodedScalar : RangeReplaceableCollection {
 
     // Find one unicode scalar.
     let (isValid, scalarBitCount) = _parseMultipleCodeUnits()
-    _sanityCheck(scalarBitCount % numericCast(Encoding.CodeUnit.bitWidth) == 0)
-    _sanityCheck(1...4 ~= scalarBitCount / 8)
-    _sanityCheck(scalarBitCount <= _buffer._bitCount)
+    _internalInvariant(scalarBitCount % numericCast(Encoding.CodeUnit.bitWidth) == 0)
+    _internalInvariant(1...4 ~= scalarBitCount / 8)
+    _internalInvariant(scalarBitCount <= _buffer._bitCount)
     
     // Consume the decoded bytes (or maximal subpart of ill-formed sequence).
     let encodedScalar = _bufferedScalar(bitCount: scalarBitCount)
     
     _buffer._storage = UInt32(
       // widen to 64 bits so that we can empty the buffer in the 4-byte case
-      extendingOrTruncating: UInt64(_buffer._storage) &>> scalarBitCount)
+      truncatingIfNeeded: UInt64(_buffer._storage) &>> scalarBitCount)
       
     _buffer._bitCount = _buffer._bitCount &- scalarBitCount
 

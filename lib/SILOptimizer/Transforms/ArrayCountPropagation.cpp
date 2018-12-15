@@ -123,7 +123,8 @@ bool ArrayAllocation::recursivelyCollectUses(ValueBase *Def) {
   for (auto *Opd : Def->getUses()) {
     auto *User = Opd->getUser();
     // Ignore reference counting and debug instructions.
-    if (isa<RefCountingInst>(User) || isa<DebugValueInst>(User))
+    if (isa<RefCountingInst>(User) ||
+        isa<DebugValueInst>(User))
       continue;
 
     // Array value projection.
@@ -134,11 +135,13 @@ bool ArrayAllocation::recursivelyCollectUses(ValueBase *Def) {
     }
 
     // Check array semantic calls.
-    ArraySemanticsCall ArrayOp(User);
-    if (ArrayOp && ArrayOp.doesNotChangeArray()) {
-      if (ArrayOp.getKind() == ArrayCallKind::kGetCount)
-        CountCalls.insert(ArrayOp);
-      continue;
+    if (auto apply = dyn_cast<ApplyInst>(User)) {
+      ArraySemanticsCall ArrayOp(apply);
+      if (ArrayOp && ArrayOp.doesNotChangeArray()) {
+        if (ArrayOp.getKind() == ArrayCallKind::kGetCount)
+          CountCalls.insert(ArrayOp);
+        continue;
+      }
     }
 
     // An operation that escapes or modifies the array value.
@@ -149,7 +152,7 @@ bool ArrayAllocation::recursivelyCollectUses(ValueBase *Def) {
 
 bool ArrayAllocation::propagateCountToUsers() {
   bool HasChanged = false;
-  DEBUG(llvm::dbgs() << "Propagating count from " << *Alloc);
+  LLVM_DEBUG(llvm::dbgs() << "Propagating count from " << *Alloc);
   for (auto *Count : CountCalls) {
     assert(ArraySemanticsCall(Count).getKind() == ArrayCallKind::kGetCount &&
            "Expecting a call to count");
@@ -162,7 +165,7 @@ bool ArrayAllocation::propagateCountToUsers() {
     }
 
     for (auto *Use : Uses) {
-      DEBUG(llvm::dbgs() << "  to user " << *Use->getUser());
+      LLVM_DEBUG(llvm::dbgs() << "  to user " << *Use->getUser());
       Use->set(ArrayCount);
       HasChanged = true;
     }

@@ -1,4 +1,5 @@
-// RUN: %target-swift-frontend -enable-experimental-keypath-components -emit-silgen %s | %FileCheck %s
+
+// RUN: %target-swift-emit-silgen %s | %FileCheck %s
 
 class A {}
 class B {}
@@ -11,69 +12,99 @@ func loadable(readonly: A, writable: inout A,
               kp: KeyPath<A, B>,
               wkp: WritableKeyPath<A, B>,
               rkp: ReferenceWritableKeyPath<A, B>) {
+  // CHECK: [[ROOT_COPY:%.*]] = copy_value [[READONLY:%0]] :
+  // CHECK: [[KP_COPY:%.*]] = copy_value [[KP:%3]]
   // CHECK: [[ROOT_TMP:%.*]] = alloc_stack $A
-  // CHECK: [[ROOT_BORROW:%.*]] = begin_borrow %0
-  // CHECK: [[ROOT_COPY:%.*]] = copy_value [[ROOT_BORROW]]
   // CHECK: store [[ROOT_COPY]] to [init] [[ROOT_TMP]]
-  // CHECK: [[KP_BORROW:%.*]] = begin_borrow %3
-  // CHECK: [[KP_COPY:%.*]] = copy_value [[KP_BORROW]]
-  // CHECK: [[PROJECT:%.*]] = function_ref @{{.*}}_projectKeyPathReadOnly
+  // CHECK: [[GET:%.*]] = function_ref @swift_getAtKeyPath :
   // CHECK: [[RESULT_TMP:%.*]] = alloc_stack $B
-  // CHECK: apply [[PROJECT]]<A, B>([[RESULT_TMP]], [[ROOT_TMP]], [[KP_COPY]])
+  // CHECK: apply [[GET]]<A, B>([[RESULT_TMP]], [[ROOT_TMP]], [[KP_COPY]])
   // CHECK: [[RESULT:%.*]] = load [take] [[RESULT_TMP]]
   // CHECK: destroy_value [[RESULT]]
   _ = readonly[keyPath: kp]
-  _ = writable[keyPath: kp]
-  _ = readonly[keyPath: wkp]
 
-  // CHECK: [[TEMP:%.*]] = mark_uninitialized
-  // CHECK: [[ROOT_ACCESS:%.*]] = begin_access [read] [unknown] %1 : $*A
-  // CHECK: [[ROOT_RAW_PTR:%.*]] = address_to_pointer [[ROOT_ACCESS]]
-  // CHECK: [[ROOT_PTR:%.*]] = struct $UnsafeMutablePointer<A> ([[ROOT_RAW_PTR]]
-  // CHECK: [[KP_BORROW:%.*]] = begin_borrow %4
-  // CHECK: [[KP_COPY:%.*]] = copy_value [[KP_BORROW]]
-  // CHECK: [[PROJECT:%.*]] = function_ref @{{.*}}_projectKeyPathWritable
-  // CHECK: [[PROJECTED:%.*]] = apply [[PROJECT]]<A, B>([[ROOT_PTR]], [[KP_COPY]])
-  // CHECK: [[PROJECTED_BORROW:%.*]] = begin_borrow [[PROJECTED]]
-  // CHECK: [[PROJECTED_PTR:%.*]] = tuple_extract [[PROJECTED_BORROW]]
-  // CHECK: [[PROJECTED_OWNER_B:%.*]] = tuple_extract [[PROJECTED_BORROW]]
-  // CHECK: [[PROJECTED_OWNER:%.*]] = copy_value [[PROJECTED_OWNER_B]]
-  // CHECK: destroy_value [[PROJECTED]]
-  // CHECK: [[PROJECTED_RAW_PTR:%.*]] = struct_extract [[PROJECTED_PTR]]
-  // CHECK: [[PROJECTED_ADDR:%.*]] = pointer_to_address [[PROJECTED_RAW_PTR]]
-  // CHECK: [[PROJECTED_DEP:%.*]] = mark_dependence [[PROJECTED_ADDR]] : $*B on [[PROJECTED_OWNER]]
-  // CHECK: [[COPY_TMP:%.*]] = load [copy] [[PROJECTED_DEP]] : $*B
-  // CHECK: assign [[COPY_TMP]] to [[TEMP]] : $*B
-  // CHECK: destroy_value [[PROJECTED_OWNER]]
-  _ = writable[keyPath: wkp]
-
-  // CHECK: [[TEMP:%.*]] = mark_uninitialized
-  // CHECK: [[ROOT_BORROW:%.*]] = begin_borrow %0
-  // CHECK: [[ROOT_COPY:%.*]] = copy_value [[ROOT_BORROW]]
+  // CHECK: [[ACCESS:%.*]] = begin_access [read] [unknown] [[WRITABLE:%1]] :
+  // CHECK: [[ROOT_COPY:%.*]] = load [copy] [[ACCESS]]
+  // CHECK: end_access [[ACCESS]]
+  // CHECK: [[KP_COPY:%.*]] = copy_value [[KP]]
   // CHECK: [[ROOT_TMP:%.*]] = alloc_stack $A
   // CHECK: store [[ROOT_COPY]] to [init] [[ROOT_TMP]]
-  // CHECK: [[KP_BORROW:%.*]] = begin_borrow %5
-  // CHECK: [[KP_COPY:%.*]] = copy_value [[KP_BORROW]]
-  // CHECK: [[PROJECT:%.*]] = function_ref @{{.*}}_projectKeyPathReferenceWritable
-  // CHECK: [[PROJECTED:%.*]] = apply [[PROJECT]]<A, B>([[ROOT_TMP]], [[KP_COPY]])
-  // CHECK: [[PROJECTED_BORROW:%.*]] = begin_borrow [[PROJECTED]]
-  // CHECK: [[PROJECTED_PTR:%.*]] = tuple_extract [[PROJECTED_BORROW]]
-  // CHECK: [[PROJECTED_OWNER_B:%.*]] = tuple_extract [[PROJECTED_BORROW]]
-  // CHECK: [[PROJECTED_OWNER:%.*]] = copy_value [[PROJECTED_OWNER_B]]
-  // CHECK: destroy_value [[PROJECTED]]
-  // CHECK: [[PROJECTED_RAW_PTR:%.*]] = struct_extract [[PROJECTED_PTR]]
-  // CHECK: [[PROJECTED_ADDR:%.*]] = pointer_to_address [[PROJECTED_RAW_PTR]]
-  // CHECK: [[PROJECTED_DEP:%.*]] = mark_dependence [[PROJECTED_ADDR]] : $*B on [[PROJECTED_OWNER]]
-  // CHECK: [[COPY_TMP:%.*]] = load [copy] [[PROJECTED_DEP]] : $*B
-  // CHECK: assign [[COPY_TMP]] to [[TEMP]] : $*B
-  // CHECK: destroy_value [[PROJECTED_OWNER]]
+  // CHECK: [[GET:%.*]] = function_ref @swift_getAtKeyPath :
+  // CHECK: [[RESULT_TMP:%.*]] = alloc_stack $B
+  // CHECK: apply [[GET]]<A, B>([[RESULT_TMP]], [[ROOT_TMP]], [[KP_COPY]])
+  // CHECK: [[RESULT:%.*]] = load [take] [[RESULT_TMP]]
+  // CHECK: destroy_value [[RESULT]]
+  _ = writable[keyPath: kp]
+
+  // CHECK: [[ROOT_COPY:%.*]] = copy_value [[READONLY]] :
+  // CHECK: [[KP_COPY:%.*]] = copy_value [[WKP:%4]]
+  // CHECK: [[KP_UPCAST:%.*]] = upcast [[KP_COPY]] : $WritableKeyPath<A, B> to $KeyPath<A, B>
+  // CHECK: [[ROOT_TMP:%.*]] = alloc_stack $A
+  // CHECK: store [[ROOT_COPY]] to [init] [[ROOT_TMP]]
+  // CHECK: [[GET:%.*]] = function_ref @swift_getAtKeyPath :
+  // CHECK: [[RESULT_TMP:%.*]] = alloc_stack $B
+  // CHECK: apply [[GET]]<A, B>([[RESULT_TMP]], [[ROOT_TMP]], [[KP_UPCAST]])
+  // CHECK: [[RESULT:%.*]] = load [take] [[RESULT_TMP]]
+  // CHECK: destroy_value [[RESULT]]
+  _ = readonly[keyPath: wkp]
+
+  // CHECK: function_ref @swift_getAtKeyPath
+  _ = writable[keyPath: wkp]
+
+  // CHECK: function_ref @swift_getAtKeyPath
   _ = readonly[keyPath: rkp]
+
+  // CHECK: function_ref @swift_getAtKeyPath
   _ = writable[keyPath: rkp]
 
+
+  // CHECK:      [[KP_COPY:%.*]] = copy_value [[WKP]]
+  // CHECK-NEXT: [[VALUE_COPY:%.*]] = copy_value [[VALUE:%2]] : $B
+  // CHECK-NEXT: [[ACCESS:%.*]] = begin_access [modify] [unknown] [[WRITABLE]] :
+  // CHECK-NEXT: [[VALUE_TEMP:%.*]] = alloc_stack $B
+  // CHECK-NEXT: store [[VALUE_COPY]] to [init] [[VALUE_TEMP]]
+  // CHECK-NEXT: // function_ref
+  // CHECK-NEXT: [[SET:%.*]] = function_ref @swift_setAtWritableKeyPath :
+  // CHECK-NEXT: apply [[SET]]<A, B>([[ACCESS]], [[KP_COPY]], [[VALUE_TEMP]])
+  // CHECK-NEXT: end_access [[ACCESS]]
+  // CHECK-NEXT: dealloc_stack [[VALUE_TEMP]]
+  // CHECK-NEXT: destroy_value [[KP_COPY]]
   writable[keyPath: wkp] = value
+
+  // CHECK-NEXT: [[ROOT_COPY:%.*]] = copy_value [[READONLY]] :
+  // CHECK-NEXT: [[KP_COPY:%.*]] = copy_value [[RKP:%5]]
+  // CHECK-NEXT: [[VALUE_COPY:%.*]] = copy_value [[VALUE]] : $B
+  // CHECK-NEXT: [[ROOT_TEMP:%.*]] = alloc_stack $A
+  // CHECK-NEXT: store [[ROOT_COPY]] to [init] [[ROOT_TEMP]]
+  // CHECK-NEXT: [[VALUE_TEMP:%.*]] = alloc_stack $B
+  // CHECK-NEXT: store [[VALUE_COPY]] to [init] [[VALUE_TEMP]]
+  // CHECK-NEXT: // function_ref
+  // CHECK-NEXT: [[SET:%.*]] = function_ref @swift_setAtReferenceWritableKeyPath :
+  // CHECK-NEXT: apply [[SET]]<A, B>([[ROOT_TEMP]], [[KP_COPY]], [[VALUE_TEMP]])
+  // CHECK-NEXT: dealloc_stack [[VALUE_TEMP]]
+  // CHECK-NEXT: destroy_addr [[ROOT_TEMP]]
+  // CHECK-NEXT: dealloc_stack [[ROOT_TEMP]]
+  // CHECK-NEXT: destroy_value [[KP_COPY]]
   readonly[keyPath: rkp] = value
+
+  // CHECK-NEXT: [[ACCESS:%.*]] = begin_access [read] [unknown] [[WRITABLE]] :
+  // CHECK-NEXT: [[ROOT_COPY:%.*]] = load [copy] [[ACCESS]] :
+  // CHECK-NEXT: end_access [[ACCESS]]
+  // CHECK-NEXT: [[KP_COPY:%.*]] = copy_value [[RKP:%5]]
+  // CHECK-NEXT: [[VALUE_COPY:%.*]] = copy_value [[VALUE]] : $B
+  // CHECK-NEXT: [[ROOT_TEMP:%.*]] = alloc_stack $A
+  // CHECK-NEXT: store [[ROOT_COPY]] to [init] [[ROOT_TEMP]]
+  // CHECK-NEXT: [[VALUE_TEMP:%.*]] = alloc_stack $B
+  // CHECK-NEXT: store [[VALUE_COPY]] to [init] [[VALUE_TEMP]]
+  // CHECK-NEXT: // function_ref
+  // CHECK-NEXT: [[SET:%.*]] = function_ref @swift_setAtReferenceWritableKeyPath :
+  // CHECK-NEXT: apply [[SET]]<A, B>([[ROOT_TEMP]], [[KP_COPY]], [[VALUE_TEMP]])
+  // CHECK-NEXT: dealloc_stack [[VALUE_TEMP]]
+  // CHECK-NEXT: destroy_addr [[ROOT_TEMP]]
+  // CHECK-NEXT: dealloc_stack [[ROOT_TEMP]]
+  // CHECK-NEXT: destroy_value [[KP_COPY]]
   writable[keyPath: rkp] = value
-}
+} // CHECK-LABEL: } // end sil function '{{.*}}loadable
 
 // CHECK-LABEL: sil hidden @{{.*}}addressOnly
 func addressOnly(readonly: P, writable: inout P,
@@ -81,62 +112,26 @@ func addressOnly(readonly: P, writable: inout P,
                  kp: KeyPath<P, Q>,
                  wkp: WritableKeyPath<P, Q>,
                  rkp: ReferenceWritableKeyPath<P, Q>) {
-  // CHECK: [[ROOT_TMP:%.*]] = alloc_stack $P
-  // CHECK: copy_addr %0 to [initialization] [[ROOT_TMP]]
-  // CHECK: [[KP_BORROW:%.*]] = begin_borrow %3
-  // CHECK: [[KP_COPY:%.*]] = copy_value [[KP_BORROW]]
-  // CHECK: [[PROJECT:%.*]] = function_ref @{{.*}}_projectKeyPathReadOnly
-  // CHECK: [[RESULT:%.*]] = alloc_stack $Q
-  // CHECK: apply [[PROJECT]]<P, Q>([[RESULT]], [[ROOT_TMP]], [[KP_COPY]])
-  // CHECK: destroy_addr [[RESULT]]
+  // CHECK: function_ref @swift_getAtKeyPath :
   _ = readonly[keyPath: kp]
+  // CHECK: function_ref @swift_getAtKeyPath :
   _ = writable[keyPath: kp]
+  // CHECK: function_ref @swift_getAtKeyPath :
   _ = readonly[keyPath: wkp]
 
-  // CHECK: [[TEMP:%.*]] = mark_uninitialized
-  // CHECK: [[ROOT_ACCESS:%.*]] = begin_access [read] [unknown] %1 : $*P
-  // CHECK: [[ROOT_RAW_PTR:%.*]] = address_to_pointer [[ROOT_ACCESS]]
-  // CHECK: [[ROOT_PTR:%.*]] = struct $UnsafeMutablePointer<P> ([[ROOT_RAW_PTR]]
-  // CHECK: [[KP_BORROW:%.*]] = begin_borrow %4
-  // CHECK: [[KP_COPY:%.*]] = copy_value [[KP_BORROW]]
-  // CHECK: [[PROJECT:%.*]] = function_ref @{{.*}}_projectKeyPathWritable
-  // CHECK: [[PROJECTED:%.*]] = apply [[PROJECT]]<P, Q>([[ROOT_PTR]], [[KP_COPY]])
-  // CHECK: [[PROJECTED_BORROW:%.*]] = begin_borrow [[PROJECTED]]
-  // CHECK: [[PROJECTED_PTR:%.*]] = tuple_extract [[PROJECTED_BORROW]]
-  // CHECK: [[PROJECTED_OWNER_B:%.*]] = tuple_extract [[PROJECTED_BORROW]]
-  // CHECK: [[PROJECTED_OWNER:%.*]] = copy_value [[PROJECTED_OWNER_B]]
-  // CHECK: destroy_value [[PROJECTED]]
-  // CHECK: [[PROJECTED_RAW_PTR:%.*]] = struct_extract [[PROJECTED_PTR]]
-  // CHECK: [[PROJECTED_ADDR:%.*]] = pointer_to_address [[PROJECTED_RAW_PTR]]
-  // CHECK: [[PROJECTED_DEP:%.*]] = mark_dependence [[PROJECTED_ADDR]] : $*Q on [[PROJECTED_OWNER]]
-  // CHECK: copy_addr [[PROJECTED_DEP]] to [initialization] [[CPY_TMP:%.*]] : $*Q
-  // CHECK: copy_addr [take] [[CPY_TMP]] to [[TEMP]] : $*Q
-  // CHECK: destroy_value [[PROJECTED_OWNER]]
+  // CHECK: function_ref @swift_getAtKeyPath :
   _ = writable[keyPath: wkp]
 
-  // CHECK: [[TEMP:%.*]] = mark_uninitialized
-  // CHECK: [[ROOT_TMP:%.*]] = alloc_stack $P
-  // CHECK: copy_addr %0 to [initialization] [[ROOT_TMP]]
-  // CHECK: [[KP_BORROW:%.*]] = begin_borrow %5
-  // CHECK: [[KP_COPY:%.*]] = copy_value [[KP_BORROW]]
-  // CHECK: [[PROJECT:%.*]] = function_ref @{{.*}}_projectKeyPathReferenceWritable
-  // CHECK: [[PROJECTED:%.*]] = apply [[PROJECT]]<P, Q>([[ROOT_TMP]], [[KP_COPY]])
-  // CHECK: [[PROJECTED_BORROW:%.*]] = begin_borrow [[PROJECTED]]
-  // CHECK: [[PROJECTED_PTR:%.*]] = tuple_extract [[PROJECTED_BORROW]]
-  // CHECK: [[PROJECTED_OWNER_B:%.*]] = tuple_extract [[PROJECTED_BORROW]]
-  // CHECK: [[PROJECTED_OWNER:%.*]] = copy_value [[PROJECTED_OWNER_B]]
-  // CHECK: destroy_value [[PROJECTED]]
-  // CHECK: [[PROJECTED_RAW_PTR:%.*]] = struct_extract [[PROJECTED_PTR]]
-  // CHECK: [[PROJECTED_ADDR:%.*]] = pointer_to_address [[PROJECTED_RAW_PTR]]
-  // CHECK: [[PROJECTED_DEP:%.*]] = mark_dependence [[PROJECTED_ADDR]] : $*Q on [[PROJECTED_OWNER]]
-  // CHECK: copy_addr [[PROJECTED_DEP]] to [initialization] [[CPY_TMP:%.*]] : $*Q
-  // CHECK: copy_addr [take] [[CPY_TMP]] to [[TEMP]] : $*Q
-  // CHECK: destroy_value [[PROJECTED_OWNER]]
+  // CHECK: function_ref @swift_getAtKeyPath :
   _ = readonly[keyPath: rkp]
+  // CHECK: function_ref @swift_getAtKeyPath :
   _ = writable[keyPath: rkp]
 
+  // CHECK: function_ref @swift_setAtWritableKeyPath :
   writable[keyPath: wkp] = value
+  // CHECK: function_ref @swift_setAtReferenceWritableKeyPath :
   readonly[keyPath: rkp] = value
+  // CHECK: function_ref @swift_setAtReferenceWritableKeyPath :
   writable[keyPath: rkp] = value
 }
 
@@ -147,77 +142,26 @@ func reabstracted(readonly: @escaping () -> (),
                   kp: KeyPath<() -> (), (A) -> B>,
                   wkp: WritableKeyPath<() -> (), (A) -> B>,
                   rkp: ReferenceWritableKeyPath<() -> (), (A) -> B>) {
-  // CHECK: [[ROOT_TMP:%.*]] = alloc_stack $@callee_owned (@in ()) -> @out ()
-  // CHECK: [[ROOT_BORROW:%.*]] = begin_borrow %0
-  // CHECK: [[ROOT_COPY:%.*]] = copy_value [[ROOT_BORROW]]
-  // CHECK: [[ROOT_ORIG:%.*]] = partial_apply {{.*}}([[ROOT_COPY]])
-  // CHECK:  store [[ROOT_ORIG]] to [init] [[ROOT_TMP]]
-  // CHECK: [[KP_BORROW:%.*]] = begin_borrow %3
-  // CHECK: [[KP_COPY:%.*]] = copy_value [[KP_BORROW]]
-  // CHECK: [[PROJECT:%.*]] = function_ref @{{.*}}_projectKeyPathReadOnly
-  // CHECK: [[RESULT_TMP:%.*]] = alloc_stack $@callee_owned (@in A) -> @out B
-  // CHECK: apply [[PROJECT]]<() -> (), (A) -> B>([[RESULT_TMP]], [[ROOT_TMP]], [[KP_COPY]])
-  // CHECK: [[RESULT_ORIG:%.*]] = load [take] [[RESULT_TMP]]
-  // CHECK: [[RESULT_SUBST:%.*]] = partial_apply {{.*}}([[RESULT_ORIG]])
-  // CHECK: destroy_value [[RESULT_SUBST]]
+  // CHECK: function_ref @swift_getAtKeyPath :
   _ = readonly[keyPath: kp]
+  // CHECK: function_ref @swift_getAtKeyPath :
   _ = writable[keyPath: kp]
+  // CHECK: function_ref @swift_getAtKeyPath :
   _ = readonly[keyPath: wkp]
 
-  // CHECK: [[TEMP_SUBST:%.*]] = mark_uninitialized {{.*}} : $*@callee_owned (@owned A) -> @owned B
-  // CHECK: [[ROOT_ACCESS:%.*]] = begin_access [read] [unknown] %1 : $*@callee_owned () -> ()
-  // CHECK: [[ROOT_ORIG_TMP:%.*]] = alloc_stack $@callee_owned (@in ()) -> @out ()
-  // CHECK: [[ROOT_SUBST:%.*]] = load [copy] [[ROOT_ACCESS]]
-  // CHECK: [[ROOT_ORIG:%.*]] = partial_apply {{.*}}([[ROOT_SUBST]])
-  // CHECK: store [[ROOT_ORIG]] to [init] [[ROOT_ORIG_TMP]]
-  // CHECK: [[ROOT_RAW_PTR:%.*]] = address_to_pointer [[ROOT_ORIG_TMP]]
-  // CHECK: [[ROOT_PTR:%.*]] = struct $UnsafeMutablePointer<() -> ()> ([[ROOT_RAW_PTR]]
-  // CHECK: [[KP_BORROW:%.*]] = begin_borrow %4
-  // CHECK: [[KP_COPY:%.*]] = copy_value [[KP_BORROW]]
-  // CHECK: [[PROJECT:%.*]] = function_ref @{{.*}}_projectKeyPathWritable
-  // CHECK: [[PROJECTED:%.*]] = apply [[PROJECT]]<() -> (), (A) -> B>([[ROOT_PTR]], [[KP_COPY]])
-  // CHECK: [[PROJECTED_BORROW:%.*]] = begin_borrow [[PROJECTED]]
-  // CHECK: [[PROJECTED_PTR:%.*]] = tuple_extract [[PROJECTED_BORROW]]
-  // CHECK: [[PROJECTED_OWNER_B:%.*]] = tuple_extract [[PROJECTED_BORROW]]
-  // CHECK: [[PROJECTED_OWNER:%.*]] = copy_value [[PROJECTED_OWNER_B]]
-  // CHECK: destroy_value [[PROJECTED]]
-  // CHECK: [[PROJECTED_RAW_PTR:%.*]] = struct_extract [[PROJECTED_PTR]]
-  // CHECK: [[PROJECTED_ORIG_ADDR:%.*]] = pointer_to_address [[PROJECTED_RAW_PTR]] {{.*}} to [strict] $*@callee_owned (@in A) -> @out B
-  // CHECK: [[PROJECTED_DEP:%.*]] = mark_dependence [[PROJECTED_ORIG_ADDR]] : $*@callee_owned (@in A) -> @out B on [[PROJECTED_OWNER]]
-  // CHECK: [[PROJECTED_ORIG:%.*]] = load [copy] [[PROJECTED_DEP]]
-  // CHECK: [[PROJECTED_SUBST:%.*]] = partial_apply {{.*}}([[PROJECTED_ORIG]])
-  // CHECK: destroy_addr [[ROOT_ORIG_TMP]]
-  // CHECK: assign [[PROJECTED_SUBST]] to [[TEMP_SUBST]]
-  // CHECK: destroy_value [[PROJECTED_OWNER]]
+  // CHECK: function_ref @swift_getAtKeyPath :
   _ = writable[keyPath: wkp]
 
-  // CHECK: [[TEMP:%.*]] = mark_uninitialized
-  // CHECK: [[ROOT_BORROW:%.*]] = begin_borrow %0
-  // CHECK: [[ROOT_COPY_SUBST:%.*]] = copy_value [[ROOT_BORROW]]
-  // CHECK: [[ROOT_COPY_ORIG:%.*]] = partial_apply {{.*}}([[ROOT_COPY_SUBST]])
-  // CHECK: [[ROOT_TMP:%.*]] = alloc_stack $@callee_owned (@in ()) -> @out ()
-  // CHECK: store [[ROOT_COPY_ORIG]] to [init] [[ROOT_TMP]]
-  // CHECK: [[KP_BORROW:%.*]] = begin_borrow %5
-  // CHECK: [[KP_COPY:%.*]] = copy_value [[KP_BORROW]]
-  // CHECK: [[PROJECT:%.*]] = function_ref @{{.*}}_projectKeyPathReferenceWritable
-  // CHECK: [[PROJECTED:%.*]] = apply [[PROJECT]]<() -> (), (A) -> B>([[ROOT_TMP]], [[KP_COPY]])
-  // CHECK: [[PROJECTED_BORROW:%.*]] = begin_borrow [[PROJECTED]]
-  // CHECK: [[PROJECTED_PTR:%.*]] = tuple_extract [[PROJECTED_BORROW]]
-  // CHECK: [[PROJECTED_OWNER_B:%.*]] = tuple_extract [[PROJECTED_BORROW]]
-  // CHECK: [[PROJECTED_OWNER:%.*]] = copy_value [[PROJECTED_OWNER_B]]
-  // CHECK: destroy_value [[PROJECTED]]
-  // CHECK: [[PROJECTED_RAW_PTR:%.*]] = struct_extract [[PROJECTED_PTR]]
-  // CHECK: [[PROJECTED_ADDR_ORIG:%.*]] = pointer_to_address [[PROJECTED_RAW_PTR]] {{.*}} to [strict] $*@callee_owned (@in A) -> @out B
-  // CHECK: [[PROJECTED_DEP:%.*]] = mark_dependence [[PROJECTED_ADDR_ORIG]] : $*@callee_owned (@in A) -> @out B on [[PROJECTED_OWNER]]
-  // CHECK: [[PROJECTED_ORIG:%.*]] = load [copy] [[PROJECTED_DEP]]
-  // CHECK: [[PROJECTED_SUBST:%.*]] = partial_apply {{.*}}([[PROJECTED_ORIG]])
-  // CHECK: assign [[PROJECTED_SUBST]] to [[TEMP]]
-  // CHECK: destroy_value [[PROJECTED_OWNER]]
+  // CHECK: function_ref @swift_getAtKeyPath :
   _ = readonly[keyPath: rkp]
+  // CHECK: function_ref @swift_getAtKeyPath :
   _ = writable[keyPath: rkp]
 
+  // CHECK: function_ref @swift_setAtWritableKeyPath :
   writable[keyPath: wkp] = value
+  // CHECK: function_ref @swift_setAtReferenceWritableKeyPath :
   readonly[keyPath: rkp] = value
+  // CHECK: function_ref @swift_setAtReferenceWritableKeyPath :
   writable[keyPath: rkp] = value
 }
 
@@ -227,17 +171,53 @@ func partial<A>(valueA: A,
                 pkpA: PartialKeyPath<A>,
                 pkpB: PartialKeyPath<Int>,
                 akp: AnyKeyPath) {
-  // CHECK: [[PROJECT:%.*]] = function_ref @{{.*}}projectKeyPathAny
+  // CHECK: [[PROJECT:%.*]] = function_ref @swift_getAtAnyKeyPath :
   // CHECK: apply [[PROJECT]]<A>
   _ = valueA[keyPath: akp]
-  // CHECK: [[PROJECT:%.*]] = function_ref @{{.*}}projectKeyPathPartial
+  // CHECK: [[PROJECT:%.*]] = function_ref @swift_getAtPartialKeyPath :
   // CHECK: apply [[PROJECT]]<A>
   _ = valueA[keyPath: pkpA]
 
-  // CHECK: [[PROJECT:%.*]] = function_ref @{{.*}}projectKeyPathAny
+  // CHECK: [[PROJECT:%.*]] = function_ref @swift_getAtAnyKeyPath :
   // CHECK: apply [[PROJECT]]<Int>
   _ = valueB[keyPath: akp]
-  // CHECK: [[PROJECT:%.*]] = function_ref @{{.*}}projectKeyPathPartial
+  // CHECK: [[PROJECT:%.*]] = function_ref @swift_getAtPartialKeyPath :
   // CHECK: apply [[PROJECT]]<Int>
   _ = valueB[keyPath: pkpB]
+}
+
+extension Int {
+  var b: Int { get { return 0 } set { } }
+  var u: Int { get { return 0 } set { } }
+  var tt: Int { get { return 0 } set { } }
+}
+
+// CHECK-LABEL: sil hidden @{{.*}}writebackNesting
+func writebackNesting(x: inout Int,
+                      y: WritableKeyPath<Int, Int>,
+                      z: WritableKeyPath<Int, Int>,
+                      w: Int) -> Int {
+  // -- get 'b'
+  // CHECK: function_ref @$sSi19keypath_applicationE1bSivg
+  // -- apply keypath y
+  // CHECK: [[PROJECT_FN:%.*]] = function_ref @swift_modifyAtWritableKeyPath :
+  // CHECK: ([[Y_ADDR:%.*]], [[Y_TOKEN:%.*]]) = begin_apply [[PROJECT_FN]]<Int, Int>
+  // -- get 'u'
+  // CHECK: function_ref @$sSi19keypath_applicationE1uSivg
+  // -- apply keypath z
+  // CHECK: [[PROJECT_FN:%.*]] = function_ref @swift_modifyAtWritableKeyPath :
+  // CHECK: ([[Z_ADDR:%.*]], [[Z_TOKEN:%.*]]) = begin_apply [[PROJECT_FN]]<Int, Int>
+
+  // -- set 'tt'
+  // CHECK: function_ref @$sSi19keypath_applicationE2ttSivs
+  // -- destroy owner for keypath projection z
+  // CHECK: end_apply [[Z_TOKEN]]
+  // -- set 'u'
+  // CHECK: function_ref @$sSi19keypath_applicationE1uSivs
+  // -- destroy owner for keypath projection y
+  // CHECK: end_apply [[Y_TOKEN]]
+  // -- set 'b'
+  // CHECK: function_ref @$sSi19keypath_applicationE1bSivs
+
+  x.b[keyPath: y].u[keyPath: z].tt = w
 }

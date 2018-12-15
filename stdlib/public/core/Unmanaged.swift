@@ -16,11 +16,10 @@
 /// keeping the object alive.
 @_fixed_layout
 public struct Unmanaged<Instance : AnyObject> {
-  @_versioned
+  @usableFromInline
   internal unowned(unsafe) var _value: Instance
 
-  @_versioned
-  @_transparent
+  @usableFromInline @_transparent
   internal init(_private: Instance) { _value = _private }
 
   /// Unsafely turns an opaque C pointer into an unmanaged class reference.
@@ -90,6 +89,7 @@ public struct Unmanaged<Instance : AnyObject> {
   /// and you know that you're not responsible for releasing the result.
   ///
   /// - Returns: The object referenced by this `Unmanaged` instance.
+  @inlinable // unsafe-performance
   public func takeUnretainedValue() -> Instance {
     return _value
   }
@@ -101,6 +101,7 @@ public struct Unmanaged<Instance : AnyObject> {
   /// and you know that you're responsible for releasing the result.
   ///
   /// - Returns: The object referenced by this `Unmanaged` instance.
+  @inlinable // unsafe-performance
   public func takeRetainedValue() -> Instance {
     let result = _value
     release()
@@ -199,6 +200,7 @@ public struct Unmanaged<Instance : AnyObject> {
   ///      }
   ///    }
   ///  }
+  @inlinable // unsafe-performance
   public func _withUnsafeGuaranteedRef<Result>(
     _ body: (Instance) throws -> Result
   ) rethrows -> Result {
@@ -229,18 +231,4 @@ public struct Unmanaged<Instance : AnyObject> {
     return self
   }
 #endif
-}
-
-extension Unmanaged {
-  @available(*, unavailable, 
-    message:"use 'fromOpaque(_: UnsafeRawPointer)' instead")
-  public static func fromOpaque(_ value: OpaquePointer) -> Unmanaged {
-    Builtin.unreachable()
-  }
-  
-  @available(*, unavailable, 
-    message:"use 'toOpaque() -> UnsafeRawPointer' instead")
-  public func toOpaque() -> OpaquePointer {
-    Builtin.unreachable()
-  }
 }

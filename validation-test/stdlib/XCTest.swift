@@ -1,9 +1,12 @@
-// RUN: %target-run-stdlib-swift
+// RUN: rm -rf %t ; mkdir -p %t
+// RUN: %target-build-swift %s -o %t/a.out -swift-version 4 && %target-run %t/a.out
+
 // REQUIRES: executable_test
 // REQUIRES: objc_interop
 
 // FIXME: Add a feature for "platforms that support XCTest".
 // REQUIRES: OS=macosx
+// UNSUPPORTED: remote_run
 
 import StdlibUnittest
 
@@ -20,20 +23,22 @@ var XCTestTestSuite = TestSuite("XCTest")
 
 func execute(observers: [XCTestObservation] = [], _ run: () -> Void) {
   for observer in observers {
-    XCTestObservationCenter.shared().addTestObserver(observer)
+    XCTestObservationCenter.shared.addTestObserver(observer)
   }
 
   run()
 
   for observer in observers {
-    XCTestObservationCenter.shared().removeTestObserver(observer)
+    XCTestObservationCenter.shared.removeTestObserver(observer)
   }
 }
 
 class FailureDescriptionObserver: NSObject, XCTestObservation {
   var failureDescription: String?
 
-  func testCase(_ testCase: XCTestCase, didFailWithDescription description: String, inFile filePath: String?, atLine lineNumber: UInt) {
+  typealias LineNumber=Int
+
+  func testCase(_ testCase: XCTestCase, didFailWithDescription description: String, inFile filePath: String?, atLine lineNumber: LineNumber) {
     failureDescription = description
   }
 }
@@ -41,6 +46,21 @@ class FailureDescriptionObserver: NSObject, XCTestObservation {
 XCTestTestSuite.test("exceptions") {
   class ExceptionTestCase: XCTestCase {
     dynamic func test_raises() {
+      NSException(name: NSExceptionName(rawValue: "XCTestTestSuiteException"), reason: nil, userInfo: nil).raise()
+    }
+
+    func test_raisesDuringAssertion() {
+      let exception = NSException(name: NSExceptionName(rawValue: "XCTestTestSuiteException"), reason: nil, userInfo: nil)
+      XCTAssertNoThrow(exception.raise())
+    }
+
+    func test_continueAfterFailureWithAssertions() {
+      self.continueAfterFailure = false
+      func triggerFailure() { XCTFail("I'm outta here!") }
+
+      XCTAssertNoThrow(triggerFailure())
+
+      // Should not be reached:
       NSException(name: NSExceptionName(rawValue: "XCTestTestSuiteException"), reason: nil, userInfo: nil).raise()
     }
   }
@@ -55,6 +75,20 @@ XCTestTestSuite.test("exceptions") {
   expectEqual(1, testRun.unexpectedExceptionCount)
   expectEqual(1, testRun.totalFailureCount)
   expectFalse(testRun.hasSucceeded)
+
+  let assertionTestCase = ExceptionTestCase(selector: #selector(ExceptionTestCase.test_raisesDuringAssertion))
+  execute(assertionTestCase.run)
+  let assertionTestRun = assertionTestCase.testRun!
+  expectEqual(1, assertionTestRun.executionCount)
+  expectEqual(0, assertionTestRun.failureCount)
+  expectEqual(1, assertionTestRun.unexpectedExceptionCount)
+
+  let continueAfterFailureTestCase = ExceptionTestCase(selector: #selector(ExceptionTestCase.test_continueAfterFailureWithAssertions))
+  execute(continueAfterFailureTestCase.run)
+  let continueAfterFailureTestRun = continueAfterFailureTestCase.testRun!
+  expectEqual(1, continueAfterFailureTestRun.executionCount)
+  expectEqual(1, continueAfterFailureTestRun.failureCount)
+  expectEqual(0, continueAfterFailureTestRun.unexpectedExceptionCount)
 }
 
 XCTestTestSuite.test("XCTAssertEqual/T") {
@@ -79,7 +113,7 @@ XCTestTestSuite.test("XCTAssertEqual/T") {
   let failingTestRun = failingTestCase.testRun!
   expectEqual(1, failingTestRun.failureCount)
   expectEqual(0, failingTestRun.unexpectedExceptionCount)
-  expectEqual(observer.failureDescription, "XCTAssertEqual failed: (\"1\") is not equal to (\"2\") - ")
+  expectTrue(observer.failureDescription!.starts(with:  "XCTAssertEqual failed: (\"1\") is not equal to (\"2\")"))
 }
 
 XCTestTestSuite.test("XCTAssertEqual/Optional<T>") {
@@ -113,7 +147,7 @@ XCTestTestSuite.test("XCTAssertEqual/Optional<T>") {
   expectEqual(0, failingTestRun.unexpectedExceptionCount)
   expectEqual(1, failingTestRun.totalFailureCount)
   expectFalse(failingTestRun.hasSucceeded)
-  expectEqual(observer.failureDescription, "XCTAssertEqual failed: (\"Optional(1)\") is not equal to (\"Optional(2)\") - ")
+  expectTrue(observer.failureDescription!.starts(with:  "XCTAssertEqual failed: (\"Optional(1)\") is not equal to (\"Optional(2)\")"))
 }
 
 XCTestTestSuite.test("XCTAssertEqual/Array<T>") {
@@ -434,11 +468,21 @@ XCTestTestSuite.test("Test methods that wind up throwing") {
 XCTestTestSuite.test("XCTContext/runActivity(named:block:)") {
   class RunActivityTestCase: XCTestCase {
 
-    dynamic func test_noThrow() {
+    dynamic func test_noThrow_void() {
       var blockCalled = false
       XCTContext.runActivity(named: "noThrow") { activity in
         blockCalled = true
       }
+      expectTrue(blockCalled)
+    }
+
+    dynamic func test_noThrow_returns_string() {
+      var blockCalled = false
+      let value = XCTContext.runActivity(named: "noThrow") { activity -> String in
+        blockCalled = true
+        return "Activities can return values now!"
+      }
+      expectEqual(value, "Activities can return values now!")
       expectTrue(blockCalled)
     }
 
@@ -459,6 +503,20 @@ XCTestTestSuite.test("XCTContext/runActivity(named:block:)") {
   }
 }
 
+#if os(macOS)
+if #available(macOS 10.11, *) {
+    XCTestTestSuite.test("XCUIElement/typeKey(_:modifierFlags:)") {
+        class TypeKeyTestCase: XCTestCase {
+            func testTypeKey() {
+                XCUIApplication().typeKey("a", modifierFlags: [])
+                XCUIApplication().typeKey(.delete, modifierFlags: [])
+            }
+        }
+    }
+}
+#endif
+
 
 runAllTests()
+
 

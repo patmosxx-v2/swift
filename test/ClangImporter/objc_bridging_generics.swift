@@ -1,9 +1,10 @@
-// RUN: %target-swift-frontend(mock-sdk: %clang-importer-sdk) -typecheck -parse-as-library -verify -swift-version 4 %s
+// RUN: %target-swift-frontend(mock-sdk: %clang-importer-sdk) -typecheck -parse-as-library -verify -swift-version 4 -I %S/Inputs/custom-modules %s
 
 // REQUIRES: objc_interop
 
 import Foundation
 import objc_generics
+import ObjCBridgeNonconforming
 
 func testNSArrayBridging(_ hive: Hive) {
   _ = hive.bees as [Bee]
@@ -122,7 +123,7 @@ extension GenericClass {
     _ = T.self // expected-note{{used here}}
   }
   // expected-error@+1{{extension of a generic Objective-C class cannot access the class's generic parameters}}
-@objc   func usesGenericParamE(_ x: Int) {
+  @objc func usesGenericParamE(_ x: Int) {
     _ = x as? T // expected-note{{used here}}
   }
   // expected-error@+1{{extension of a generic Objective-C class cannot access the class's generic parameters}}
@@ -248,18 +249,22 @@ extension AnimalContainer {
   }
 
 
+  // expected-note@+2{{add '@objc' to allow uses of 'self' within the function body}}{{3-3=@objc }}
   // expected-error@+1{{extension of a generic Objective-C class cannot access the class's generic parameters}}
   func usesGenericParamA(_ x: T) {
     _ = T(noise: x) // expected-note{{used here}}
   }
+  // expected-note@+2{{add '@objc' to allow uses of 'self' within the function body}}{{3-3=@objc }}
   // expected-error@+1{{extension of a generic Objective-C class cannot access the class's generic parameters}}
   func usesGenericParamB() {
     _ = T.create() // expected-note{{used here}}
   }
+  // expected-note@+2{{add '@objc' to allow uses of 'self' within the function body}}{{3-3=@objc }}
   // expected-error@+1{{extension of a generic Objective-C class cannot access the class's generic parameters}}
   func usesGenericParamC() {
     _ = T.apexPredator // expected-note{{used here}}
   }
+  // expected-note@+2{{add '@objc' to allow uses of 'self' within the function body}}{{3-3=@objc }}
   // expected-error@+1{{extension of a generic Objective-C class cannot access the class's generic parameters}}
   func usesGenericParamD(_ x: T) {
     T.apexPredator = x // expected-note{{used here}}
@@ -268,6 +273,7 @@ extension AnimalContainer {
   // rdar://problem/27796375 -- allocating init entry points for ObjC
   // initializers are generated as true Swift generics, so reify type
   // parameters.
+  // expected-note@+2{{add '@objc' to allow uses of 'self' within the function body}}{{3-3=@objc }}
   // expected-error@+1{{extension of a generic Objective-C class cannot access the class's generic parameters}}
   func usesGenericParamE(_ x: T) {
     _ = GenericClass(thing: x) // expected-note{{used here}}
@@ -391,4 +397,24 @@ let third: Third! = Third()
 
 func useThird() {
   _ = third.description
+}
+
+
+func testNonconforming(bnc: ObjCBridgeNonconforming) {
+  let _: Int = bnc.foo // expected-error{{cannot convert value of type 'Set<AnyHashable>' to specified type 'Int'}}
+}
+
+func testHashableGenerics(
+    any: ObjCBridgeGeneric<ElementConcrete>,
+    constrained: ObjCBridgeGenericConstrained<ElementConcrete>,
+    insufficient: ObjCBridgeGenericInsufficientlyConstrained<ElementConcrete>,
+    extra: ObjCBridgeGenericConstrainedExtra<ElementConcrete>) {
+  let _: Int = any.foo // expected-error{{cannot convert value of type 'Set<AnyHashable>' to specified type 'Int'}}
+  let _: Int = constrained.foo // expected-error{{cannot convert value of type 'Set<ElementConcrete>' to specified type 'Int'}}
+  let _: Int = insufficient.foo // expected-error{{cannot convert value of type 'Set<AnyHashable>' to specified type 'Int'}}
+  let _: Int = extra.foo // expected-error{{cannot convert value of type 'Set<ElementConcrete>' to specified type 'Int'}}
+}
+
+func testGenericsWithTypedefBlocks(hba: HasBlockArray) {
+  let _: Int = hba.blockArray() // expected-error{{type '[@convention(block) () -> Void]'}}
 }

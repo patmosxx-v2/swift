@@ -1,11 +1,11 @@
-// RUN: rm -rf %t
-// RUN: mkdir %t
+// RUN: %empty-directory(%t)
 // RUN: %target-build-swift -O %s -o %t/out
 // RUN: not --crash %t/out 2>&1 | %FileCheck %s
 
 // UNSUPPORTED: OS=watchos
 // UNSUPPORTED: OS=ios
 // UNSUPPORTED: OS=tvos
+// REQUIRES: OS=macosx
 // REQUIRES: swift_stdlib_no_asserts
 // REQUIRES: executable_test
 

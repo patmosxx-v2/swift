@@ -15,6 +15,7 @@
 //
 //===----------------------------------------------------------------------===//
 #include "TypeChecker.h"
+#include "TypoCorrection.h"
 #include "swift/Basic/Range.h"
 
 using namespace swift;
@@ -78,7 +79,7 @@ Optional<Type> TypeChecker::checkObjCKeyPathExpr(DeclContext *dc,
   Type currentType;
   auto updateState = [&](bool isProperty, Type newType) {
     // Strip off optionals.
-    newType = newType->lookThroughAllAnyOptionalTypes();
+    newType = newType->lookThroughAllOptionalTypes();
 
     // If updating to a type, just set the new type; there's nothing
     // more to do.
@@ -166,6 +167,8 @@ Optional<Type> TypeChecker::checkObjCKeyPathExpr(DeclContext *dc,
       return lookupUnqualified(dc, componentName, componentNameLoc);
 
     assert(currentType && "Non-beginning state must have a type");
+    if (!currentType->mayHaveMembers())
+      return LookupResult();
 
     // Determine the type in which the lookup should occur. If we have
     // a bridged value type, this will be the Objective-C class to
@@ -200,6 +203,7 @@ Optional<Type> TypeChecker::checkObjCKeyPathExpr(DeclContext *dc,
     // TODO: Perhaps we can map subscript components to dictionary keys.
     switch (auto kind = component.getKind()) {
     case KeyPathExpr::Component::Kind::Invalid:
+    case KeyPathExpr::Component::Kind::Identity:
       continue;
 
     case KeyPathExpr::Component::Kind::UnresolvedProperty:
@@ -246,11 +250,12 @@ Optional<Type> TypeChecker::checkObjCKeyPathExpr(DeclContext *dc,
     // If we didn't find anything, try to apply typo-correction.
     bool resultsAreFromTypoCorrection = false;
     if (!lookup) {
+      TypoCorrectionResults corrections(*this, componentName,
+                                        DeclNameLoc(componentNameLoc));
       performTypoCorrection(dc, DeclRefKind::Ordinary, lookupType,
-                            componentName, componentNameLoc,
                             (lookupType ? defaultMemberTypeLookupOptions
                                         : defaultUnqualifiedLookupOptions),
-                            lookup);
+                            corrections);
 
       if (currentType)
         diagnose(componentNameLoc, diag::could_not_find_type_member,
@@ -260,10 +265,8 @@ Optional<Type> TypeChecker::checkObjCKeyPathExpr(DeclContext *dc,
                  componentName, false);
 
       // Note all the correction candidates.
-      for (auto &result : lookup) {
-        noteTypoCorrection(componentName, DeclNameLoc(componentNameLoc),
-                           result);
-      }
+      corrections.noteAllCandidates();
+      corrections.addAllCandidatesToLookup(lookup);
 
       isInvalid = true;
       if (!lookup) break;
@@ -275,13 +278,14 @@ Optional<Type> TypeChecker::checkObjCKeyPathExpr(DeclContext *dc,
     // If we have more than one result, filter out unavailable or
     // obviously unusable candidates.
     if (lookup.size() > 1) {
-      lookup.filter([&](LookupResult::Result result) -> bool {
+      lookup.filter([&](LookupResultEntry result, bool isOuter) -> bool {
           // Drop unavailable candidates.
-          if (result->getAttrs().isUnavailable(Context))
+          if (result.getValueDecl()->getAttrs().isUnavailable(Context))
             return false;
 
           // Drop non-property, non-type candidates.
-          if (!isa<VarDecl>(result.Decl) && !isa<TypeDecl>(result.Decl))
+          if (!isa<VarDecl>(result.getValueDecl()) &&
+              !isa<TypeDecl>(result.getValueDecl()))
             return false;
 
           return true;
@@ -302,13 +306,14 @@ Optional<Type> TypeChecker::checkObjCKeyPathExpr(DeclContext *dc,
                  componentName);
 
       for (auto result : lookup) {
-        diagnose(result, diag::decl_declared_here, result->getFullName());
+        diagnose(result.getValueDecl(), diag::decl_declared_here,
+                 result.getValueDecl()->getFullName());
       }
       isInvalid = true;
       break;
     }
 
-    auto found = lookup.front().Decl;
+    auto found = lookup.front().getValueDecl();
 
     // Handle property references.
     if (auto var = dyn_cast<VarDecl>(found)) {
@@ -319,8 +324,7 @@ Optional<Type> TypeChecker::checkObjCKeyPathExpr(DeclContext *dc,
       auto resolved =
         KeyPathExpr::Component::forProperty(varRef, Type(), componentNameLoc);
       resolvedComponents.push_back(resolved);
-      updateState(/*isProperty=*/true,
-                  var->getInterfaceType()->getRValueObjectType());
+      updateState(/*isProperty=*/true, var->getInterfaceType());
 
       // Check that the property is @objc.
       if (!var->isObjC()) {
@@ -340,9 +344,7 @@ Optional<Type> TypeChecker::checkObjCKeyPathExpr(DeclContext *dc,
               Swift3ObjCInferenceWarnings::Minimal) {
           diagnose(componentNameLoc, diag::expr_keypath_swift3_objc_inference,
                    var->getFullName(),
-                   var->getDeclContext()
-                    ->getAsNominalTypeOrNominalTypeExtensionContext()
-                   ->getName());
+                   var->getDeclContext()->getSelfNominalTypeDecl()->getName());
           diagnose(var, diag::make_decl_objc, var->getDescriptiveKind())
             .fixItInsert(var->getAttributeInsertionLoc(false),
                          "@objc ");

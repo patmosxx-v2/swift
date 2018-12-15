@@ -46,7 +46,7 @@ class TestContext : public TestContextBase {
   SourceFile *FileForLookups;
 
 public:
-  ASTContext Ctx;
+  ASTContext &Ctx;
 
   TestContext(ShouldDeclareOptionalTypes optionals = DoNotDeclareOptionalTypes);
 
@@ -56,7 +56,7 @@ public:
     auto result = new (Ctx) Nominal(SourceLoc(), Ctx.getIdentifier(name),
                                     SourceLoc(), /*inherited*/{},
                                     genericParams, FileForLookups);
-    result->setAccessibility(Accessibility::Internal);
+    result->setAccess(AccessLevel::Internal);
     return result;
   }
 };

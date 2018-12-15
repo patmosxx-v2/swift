@@ -179,7 +179,14 @@ bool SourceKit::CodeCompletion::addCustomCompletions(
     case CompletionKind::AssignmentRHS:
     case CompletionKind::CallArg:
     case CompletionKind::ReturnStmtExpr:
+    case CompletionKind::YieldStmtExpr:
       if (custom.Contexts.contains(CustomCompletionInfo::Expr)) {
+        changed = true;
+        addCompletion(custom);
+      }
+      break;
+    case CompletionKind::ForEachSequence:
+      if (custom.Contexts.contains(CustomCompletionInfo::ForEachSequence)) {
         changed = true;
         addCompletion(custom);
       }
@@ -1206,6 +1213,7 @@ void CompletionBuilder::getFilterName(CodeCompletionString *str,
       case ChunkKind::Whitespace:
       case ChunkKind::Ellipsis:
       case ChunkKind::Ampersand:
+      case ChunkKind::OptionalMethodCallTail:
         continue;
       case ChunkKind::CallParameterColon:
         // Since we don't add the type, also don't add the space after ':'.

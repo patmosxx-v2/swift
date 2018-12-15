@@ -7,8 +7,18 @@ extension A {
   func implicitlyObjC() { }
 }
 
+extension C {
+  func alsoImplicitlyObjC() { }
+}
+
+class D : C {
+  func yetAnotherImplicitlyObjC() { }
+}
+
 func testSelectors(a: AnyObject) {
   a.implicitlyObjC?()  // okay: would complain without SwiftObjCMembers
+  a.alsoImplicitlyObjC?()  // okay: would complain without SwiftObjCMembers
+  a.yetAnotherImplicitlyObjC?()  // okay: would complain without SwiftObjCMembers
 }
 #endif
 

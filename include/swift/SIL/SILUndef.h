@@ -17,23 +17,34 @@
 #include "swift/SIL/SILValue.h"
 
 namespace swift {
-  class SILModule;
+
+class SILArgument;
+class SILInstruction;
+class SILModule;
 
 class SILUndef : public ValueBase {
-  void operator=(const SILArgument &) = delete;
-  void operator delete(void *Ptr, size_t) SWIFT_DELETE_OPERATOR_DELETED
+  ValueOwnershipKind ownershipKind;
 
-  SILUndef(SILType Ty) : ValueBase(ValueKind::SILUndef, Ty) {}
+  SILUndef(SILType type, SILModule &m);
+
 public:
+  void operator=(const SILArgument &) = delete;
+  void operator delete(void *, size_t) SWIFT_DELETE_OPERATOR_DELETED;
 
-  static SILUndef *get(SILType Ty, SILModule *M);
-  static SILUndef *get(SILType Ty, SILModule &M) { return get(Ty, &M); }
+  static SILUndef *get(SILType ty, SILModule &m);
+  static SILUndef *get(SILType ty, SILModule *m) { return get(ty, *m); }
 
-  template<class OwnerTy>
-  static SILUndef *getSentinelValue(SILType Ty, OwnerTy Owner) { return new (*Owner) SILUndef(Ty); }
+  template <class OwnerTy>
+  static SILUndef *getSentinelValue(SILType type, SILModule &m, OwnerTy owner) {
+    return new (*owner) SILUndef(type, m);
+  }
 
-  static bool classof(const ValueBase *V) {
-    return V->getKind() == ValueKind::SILUndef;
+  ValueOwnershipKind getOwnershipKind() const { return ownershipKind; }
+
+  static bool classof(const SILArgument *) = delete;
+  static bool classof(const SILInstruction *) = delete;
+  static bool classof(const SILNode *node) {
+    return node->getKind() == SILNodeKind::SILUndef;
   }
 };
 

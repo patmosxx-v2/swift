@@ -10,7 +10,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "swift/SIL/SILFunction.h"
 #include "swift/SIL/SILGlobalVariable.h"
+#include "swift/SIL/SILInstruction.h"
 #include "swift/SIL/SILLinkage.h"
 #include "swift/SIL/SILModule.h"
 
@@ -52,16 +54,7 @@ SILGlobalVariable::SILGlobalVariable(SILModule &Module, SILLinkage Linkage,
   setSerialized(isSerialized);
   IsDeclaration = isAvailableExternally(Linkage);
   setLet(Decl ? Decl->isLet() : false);
-  InitializerF = nullptr;
   Module.silGlobals.push_back(this);
-}
-
-void SILGlobalVariable::setInitializer(SILFunction *InitF) {
-  if (InitializerF)
-    InitializerF->decrementRefCount();
-  // Increment the ref count to make sure it will not be eliminated.
-  InitF->incrementRefCount();
-  InitializerF = InitF;
 }
 
 SILGlobalVariable::~SILGlobalVariable() {
@@ -77,104 +70,103 @@ void SILGlobalVariable::setSerialized(IsSerialized_t isSerialized) {
   Serialized = isSerialized ? 1 : 0;
 }
 
-// FIXME
-
-static bool analyzeStaticInitializer(SILFunction *F, SILInstruction *&Val,
-                                     SILGlobalVariable *&GVar) {
-  Val = nullptr;
-  GVar = nullptr;
-  // We only handle a single SILBasicBlock for now.
-  if (F->size() != 1)
-    return false;
-
-  SILBasicBlock *BB = &F->front();
-  GlobalAddrInst *SGA = nullptr;
-  bool HasStore = false;
-  for (auto &I : *BB) {
-    // Make sure we have a single GlobalAddrInst and a single StoreInst.
-    // And the StoreInst writes to the GlobalAddrInst.
-    if (isa<AllocGlobalInst>(&I)) {
-      continue;
-    } else if (auto *sga = dyn_cast<GlobalAddrInst>(&I)) {
-      if (SGA)
-        return false;
-      SGA = sga;
-      GVar = SGA->getReferencedGlobal();
-    } else if (auto *SI = dyn_cast<StoreInst>(&I)) {
-      if (HasStore || SI->getDest() != SGA)
-        return false;
-      HasStore = true;
-      Val = dyn_cast<SILInstruction>(SI->getSrc());
-
-      // We only handle StructInst and TupleInst being stored to a
-      // global variable for now.
-      if (!isa<StructInst>(Val) && !isa<TupleInst>(Val))
-        return false;
-    } else {
-
-      if (auto *bi = dyn_cast<BuiltinInst>(&I)) {
-        switch (bi->getBuiltinInfo().ID) {
-        case BuiltinValueKind::FPTrunc:
-          if (isa<LiteralInst>(bi->getArguments()[0]))
-            continue;
-          break;
-        default:
-          return false;
-        }
-      }
-
-      // Objective-C selector string literals cannot be used in static
-      // initializers.
-      if (auto *stringLit = dyn_cast<StringLiteralInst>(&I)) {
-        switch (stringLit->getEncoding()) {
-        case StringLiteralInst::Encoding::UTF8:
-        case StringLiteralInst::Encoding::UTF16:
-          continue;
-
-        case StringLiteralInst::Encoding::ObjCSelector:
-          return false;
-        }
-      }
-
-      if (I.getKind() != ValueKind::ReturnInst &&
-          I.getKind() != ValueKind::StructInst &&
-          I.getKind() != ValueKind::TupleInst &&
-          I.getKind() != ValueKind::DebugValueInst &&
-          I.getKind() != ValueKind::IntegerLiteralInst &&
-          I.getKind() != ValueKind::FloatLiteralInst)
-        return false;
-    }
-  }
-  return true;
-}
-
-bool SILGlobalVariable::canBeStaticInitializer(SILFunction *F) {
-  SILInstruction *dummySI;
-  SILGlobalVariable *dummyGV;
-  return analyzeStaticInitializer(F, dummySI, dummyGV);
-}
-
-/// Check if a given SILFunction can be a static initializer. If yes, return
-/// the SILGlobalVariable that it writes to.
-SILGlobalVariable *SILGlobalVariable::getVariableOfStaticInitializer(
-                     SILFunction *F) {
-  SILInstruction *dummySI;
-  SILGlobalVariable *GV;
-  if (analyzeStaticInitializer(F, dummySI, GV))
-    return GV;
-  return nullptr;
-}
-
 /// Return the value that is written into the global variable.
-SILInstruction *SILGlobalVariable::getValueOfStaticInitializer() {
-  if (!InitializerF)
+SILInstruction *SILGlobalVariable::getStaticInitializerValue() {
+  if (StaticInitializerBlock.empty())
     return nullptr;
 
-  SILInstruction *SI;
-  SILGlobalVariable *dummyGV;
-  if (analyzeStaticInitializer(InitializerF, SI, dummyGV))
-    return SI;
-  return nullptr;
+  return &StaticInitializerBlock.back();
+}
+
+BuiltinInst *SILGlobalVariable::getOffsetSubtract(const TupleExtractInst *TE,
+                                                  SILModule &M) {
+
+  // Match the pattern:
+  // tuple_extract(usub_with_overflow(x, integer_literal, integer_literal 0), 0)
+
+  if (TE->getFieldNo() != 0)
+    return nullptr;
+
+  auto *BI = dyn_cast<BuiltinInst>(TE->getOperand());
+  if (!BI)
+    return nullptr;
+  if (M.getBuiltinInfo(BI->getName()).ID != BuiltinValueKind::USubOver)
+    return nullptr;
+
+  if (!isa<IntegerLiteralInst>(BI->getArguments()[1]))
+    return nullptr;
+
+  auto *overflowFlag = dyn_cast<IntegerLiteralInst>(BI->getArguments()[2]);
+  if (!overflowFlag || !overflowFlag->getValue().isNullValue())
+    return nullptr;
+
+  return BI;
+}
+
+bool SILGlobalVariable::isValidStaticInitializerInst(const SILInstruction *I,
+                                                     SILModule &M) {
+  switch (I->getKind()) {
+    case SILInstructionKind::BuiltinInst: {
+      auto *bi = cast<BuiltinInst>(I);
+      switch (M.getBuiltinInfo(bi->getName()).ID) {
+        case BuiltinValueKind::PtrToInt:
+          if (isa<LiteralInst>(bi->getArguments()[0]))
+            return true;
+          break;
+        case BuiltinValueKind::StringObjectOr:
+          // The first operand can be a string literal (i.e. a pointer), but the
+          // second operand must be a constant. This enables creating a
+          // a pointer+offset relocation.
+          // Note that StringObjectOr requires the or'd bits in the first
+          // operand to be 0, so the operation is equivalent to an addition.
+          if (isa<IntegerLiteralInst>(bi->getArguments()[1]))
+            return true;
+          break;
+        case BuiltinValueKind::ZExtOrBitCast:
+          return true;
+        case BuiltinValueKind::USubOver: {
+          // Handle StringObjectOr(tuple_extract(usub_with_overflow(x, offset)), bits)
+          // This pattern appears in UTF8 String literal construction.
+          auto *TE = bi->getSingleUserOfType<TupleExtractInst>();
+          return TE && getOffsetSubtract(TE, M);
+        }
+        default:
+          break;
+      }
+      return false;
+    }
+    case SILInstructionKind::TupleExtractInst: {
+      // Handle StringObjectOr(tuple_extract(usub_with_overflow(x, offset)), bits)
+      // This pattern appears in UTF8 String literal construction.
+      auto *TE = cast<TupleExtractInst>(I);
+      if (!getOffsetSubtract(TE, M))
+        return false;
+      auto *BI = TE->getSingleUserOfType<BuiltinInst>();
+      return BI &&
+        M.getBuiltinInfo(BI->getName()).ID == BuiltinValueKind::StringObjectOr;
+    }
+    case SILInstructionKind::StringLiteralInst:
+      switch (cast<StringLiteralInst>(I)->getEncoding()) {
+        case StringLiteralInst::Encoding::Bytes:
+        case StringLiteralInst::Encoding::UTF8:
+        case StringLiteralInst::Encoding::UTF16:
+          return true;
+        case StringLiteralInst::Encoding::ObjCSelector:
+          // Objective-C selector string literals cannot be used in static
+          // initializers.
+          return false;
+      }
+      return false;
+    case SILInstructionKind::StructInst:
+    case SILInstructionKind::TupleInst:
+    case SILInstructionKind::IntegerLiteralInst:
+    case SILInstructionKind::FloatLiteralInst:
+    case SILInstructionKind::ObjectInst:
+    case SILInstructionKind::ValueToBridgeObjectInst:
+      return true;
+    default:
+      return false;
+  }
 }
 
 /// Return whether this variable corresponds to a Clang node.
@@ -188,4 +180,133 @@ ClangNode SILGlobalVariable::getClangNode() const {
 }
 const clang::Decl *SILGlobalVariable::getClangDecl() const {
   return (VDecl ? VDecl->getClangDecl() : nullptr);
+}
+
+//===----------------------------------------------------------------------===//
+// Utilities for verification and optimization.
+//===----------------------------------------------------------------------===//
+
+static SILGlobalVariable *getStaticallyInitializedVariable(SILFunction *AddrF) {
+  if (AddrF->isExternalDeclaration())
+    return nullptr;
+
+  auto *RetInst = cast<ReturnInst>(AddrF->findReturnBB()->getTerminator());
+  auto *API = dyn_cast<AddressToPointerInst>(RetInst->getOperand());
+  if (!API)
+    return nullptr;
+  auto *GAI = dyn_cast<GlobalAddrInst>(API->getOperand());
+  if (!GAI)
+    return nullptr;
+
+  return GAI->getReferencedGlobal();
+}
+
+SILGlobalVariable *swift::getVariableOfGlobalInit(SILFunction *AddrF) {
+  if (!AddrF->isGlobalInit())
+    return nullptr;
+
+  if (auto *SILG = getStaticallyInitializedVariable(AddrF))
+    return SILG;
+
+  // If the addressor contains a single "once" call, it calls globalinit_func,
+  // and the globalinit_func is called by "once" from a single location,
+  // continue; otherwise bail.
+  BuiltinInst *CallToOnce;
+  auto *InitF = findInitializer(&AddrF->getModule(), AddrF, CallToOnce);
+
+  if (!InitF || !InitF->getName().startswith("globalinit_"))
+    return nullptr;
+
+  // If the globalinit_func is trivial, continue; otherwise bail.
+  SingleValueInstruction *dummyInitVal;
+  auto *SILG = getVariableOfStaticInitializer(InitF, dummyInitVal);
+
+  return SILG;
+}
+
+SILFunction *swift::getCalleeOfOnceCall(BuiltinInst *BI) {
+  assert(BI->getNumOperands() == 2 && "once call should have 2 operands.");
+
+  auto Callee = BI->getOperand(1);
+  assert(Callee->getType().castTo<SILFunctionType>()->getRepresentation()
+           == SILFunctionTypeRepresentation::CFunctionPointer &&
+         "Expected C function representation!");
+
+  if (auto *FR = dyn_cast<FunctionRefInst>(Callee))
+    return FR->getReferencedFunction();
+
+  return nullptr;
+}
+
+// Find the globalinit_func by analyzing the body of the addressor.
+SILFunction *swift::findInitializer(SILModule *Module, SILFunction *AddrF,
+                             BuiltinInst *&CallToOnce) {
+  // We only handle a single SILBasicBlock for now.
+  if (AddrF->size() != 1)
+    return nullptr;
+
+  CallToOnce = nullptr;
+  SILBasicBlock *BB = &AddrF->front();
+  for (auto &I : *BB) {
+    // Find the builtin "once" call.
+    if (auto *BI = dyn_cast<BuiltinInst>(&I)) {
+      const BuiltinInfo &Builtin =
+        BI->getModule().getBuiltinInfo(BI->getName());
+      if (Builtin.ID != BuiltinValueKind::Once)
+        continue;
+
+      // Bail if we have multiple "once" calls in the addressor.
+      if (CallToOnce)
+        return nullptr;
+
+      CallToOnce = BI;
+    }
+  }
+  if (!CallToOnce)
+    return nullptr;
+  return getCalleeOfOnceCall(CallToOnce);
+}
+
+SILGlobalVariable *
+swift::getVariableOfStaticInitializer(SILFunction *InitFunc,
+                                      SingleValueInstruction *&InitVal) {
+  InitVal = nullptr;
+  SILGlobalVariable *GVar = nullptr;
+  // We only handle a single SILBasicBlock for now.
+  if (InitFunc->size() != 1)
+    return nullptr;
+
+  SILBasicBlock *BB = &InitFunc->front();
+  GlobalAddrInst *SGA = nullptr;
+  bool HasStore = false;
+  for (auto &I : *BB) {
+    // Make sure we have a single GlobalAddrInst and a single StoreInst.
+    // And the StoreInst writes to the GlobalAddrInst.
+    if (isa<AllocGlobalInst>(&I) || isa<ReturnInst>(&I)
+        || isa<DebugValueInst>(&I)) {
+      continue;
+    } else if (auto *sga = dyn_cast<GlobalAddrInst>(&I)) {
+      if (SGA)
+        return nullptr;
+      SGA = sga;
+      GVar = SGA->getReferencedGlobal();
+    } else if (auto *SI = dyn_cast<StoreInst>(&I)) {
+      if (HasStore || SI->getDest() != SGA)
+        return nullptr;
+      HasStore = true;
+      SILValue value = SI->getSrc();
+
+      // We only handle StructInst and TupleInst being stored to a
+      // global variable for now.
+      if (!isa<StructInst>(value) && !isa<TupleInst>(value))
+        return nullptr;
+      InitVal = cast<SingleValueInstruction>(value);
+    } else if (!SILGlobalVariable::isValidStaticInitializerInst(&I,
+                                                             I.getModule())) {
+      return nullptr;
+    }
+  }
+  if (!InitVal)
+    return nullptr;
+  return GVar;
 }

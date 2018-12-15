@@ -32,225 +32,14 @@ using llvm::ArrayRef;
 using llvm::StringRef;
 using llvm::raw_ostream;
 
+#define KEY(NAME, CONTENT) UIdent sourcekitd::Key##NAME(CONTENT);
+#include "SourceKit/Core/ProtocolUIDs.def"
 
-UIdent sourcekitd::KeyVersionMajor("key.version_major");;
-UIdent sourcekitd::KeyVersionMinor("key.version_minor");;
-UIdent sourcekitd::KeyResults("key.results");
-UIdent sourcekitd::KeyRequest("key.request");
-UIdent sourcekitd::KeyCompilerArgs("key.compilerargs");
-UIdent sourcekitd::KeyOffset("key.offset");
-UIdent sourcekitd::KeySourceFile("key.sourcefile");
-UIdent sourcekitd::KeySourceText("key.sourcetext");
-UIdent sourcekitd::KeyModuleName("key.modulename");
-UIdent sourcekitd::KeyGroupName("key.groupname");
-UIdent sourcekitd::KeyActionName("key.actionname");
-UIdent sourcekitd::KeySynthesizedExtension("key.synthesizedextensions");
-UIdent sourcekitd::KeyNotification("key.notification");
-UIdent sourcekitd::KeyKeyword("key.keyword");
-UIdent sourcekitd::KeyName("key.name");
-UIdent sourcekitd::KeyNames("key.names");
-UIdent sourcekitd::KeyUIDs("key.uids");
-UIdent sourcekitd::KeyEnableSyntaxMap("key.enablesyntaxmap");
-UIdent sourcekitd::KeyEnableDiagnostics("key.enablediagnostics");
-UIdent sourcekitd::KeySyntacticOnly("key.syntactic_only");
-UIdent sourcekitd::KeyLength("key.length");
-UIdent sourcekitd::KeyActionable("key.actionable");
-UIdent sourcekitd::KeyParentLoc("key.parent_loc");
-UIdent sourcekitd::KeyKind("key.kind");
-UIdent sourcekitd::KeyAccessibility("key.accessibility");
-UIdent sourcekitd::KeySetterAccessibility("key.setter_accessibility");
-UIdent sourcekitd::KeyUSR("key.usr");
-UIdent sourcekitd::KeyOriginalUSR("key.original_usr");
-UIdent sourcekitd::KeyDefaultImplementationOf("key.default_implementation_of");
-UIdent sourcekitd::KeyInterestedUSR("key.interested_usr");
-UIdent sourcekitd::KeyLine("key.line");
-UIdent sourcekitd::KeyColumn("key.column");
-UIdent sourcekitd::KeyReceiverUSR("key.receiver_usr");
-UIdent sourcekitd::KeyIsDynamic("key.is_dynamic");
-UIdent sourcekitd::KeyIsTestCandidate("key.is_test_candidate");
-UIdent sourcekitd::KeyDescription("key.description");
-UIdent sourcekitd::KeyTypeName("key.typename");
-UIdent sourcekitd::KeyRuntimeName("key.runtime_name");
-UIdent sourcekitd::KeySelectorName("key.selector_name");
-UIdent sourcekitd::KeyOverrides("key.overrides");
-UIdent sourcekitd::KeyDocBrief("key.doc.brief");
-UIdent sourcekitd::KeyAssociatedUSRs("key.associated_usrs");
-UIdent sourcekitd::KeyDocFullAsXML("key.doc.full_as_xml");
-UIdent sourcekitd::KeyGenericParams("key.generic_params");
-UIdent sourcekitd::KeyGenericRequirements("key.generic_requirements");
-UIdent sourcekitd::KeyAnnotatedDecl("key.annotated_decl");
-UIdent sourcekitd::KeyFullyAnnotatedDecl("key.fully_annotated_decl");
-UIdent sourcekitd::KeyRelatedDecls("key.related_decls");
-UIdent sourcekitd::KeyContext("key.context");
-UIdent sourcekitd::KeyModuleImportDepth("key.moduleimportdepth");
-UIdent sourcekitd::KeyNumBytesToErase("key.num_bytes_to_erase");
-UIdent sourcekitd::KeyNotRecommended("key.not_recommended");
-UIdent sourcekitd::KeyFilePath("key.filepath");
-UIdent sourcekitd::KeyModuleInterfaceName("key.module_interface_name");
-UIdent sourcekitd::KeyHash("key.hash");
-UIdent sourcekitd::KeyRelated("key.related");
-UIdent sourcekitd::KeyInherits("key.inherits");
-UIdent sourcekitd::KeyConforms("key.conforms");
-UIdent sourcekitd::KeyExtends("key.extends");
-UIdent sourcekitd::KeyDependencies("key.dependencies");
-UIdent sourcekitd::KeyEntities("key.entities");
-UIdent sourcekitd::KeyDiagnostics("key.diagnostics");
-UIdent sourcekitd::KeySeverity("key.severity");
-UIdent sourcekitd::KeyRanges("key.ranges");
-UIdent sourcekitd::KeyFixits("key.fixits");
-UIdent sourcekitd::KeyAnnotations("key.annotations");
-UIdent sourcekitd::KeyDiagnosticStage("key.diagnostic_stage");
-UIdent sourcekitd::KeySyntaxMap("key.syntaxmap");
-UIdent sourcekitd::KeyIsSystem("key.is_system");
-UIdent sourcekitd::KeyEnableStructure("key.enablesubstructure");
-UIdent sourcekitd::KeySubStructure("key.substructure");
-UIdent sourcekitd::KeyElements("key.elements");
-UIdent sourcekitd::KeyNameOffset("key.nameoffset");
-UIdent sourcekitd::KeyNameLength("key.namelength");
-UIdent sourcekitd::KeyBodyOffset("key.bodyoffset");
-UIdent sourcekitd::KeyBodyLength("key.bodylength");
-UIdent sourcekitd::KeyThrowOffset("key.throwoffset");
-UIdent sourcekitd::KeyThrowLength("key.throwlength");
-UIdent sourcekitd::KeyIsLocal("key.is_local");
-UIdent sourcekitd::KeyAttributes("key.attributes");
-UIdent sourcekitd::KeyAttribute("key.attribute");
-UIdent sourcekitd::KeyInheritedTypes("key.inheritedtypes");
-UIdent sourcekitd::KeyFormatOptions("key.editor.format.options");
-UIdent sourcekitd::KeyCodeCompleteOptions("key.codecomplete.options");
-UIdent sourcekitd::KeyFilterRules("key.codecomplete.filterrules");
-UIdent sourcekitd::KeyNextRequestStart("key.nextrequeststart");
-UIdent sourcekitd::KeyPopular("key.popular");
-UIdent sourcekitd::KeyUnpopular("key.unpopular");
-UIdent sourcekitd::KeyHide("key.hide");
-UIdent sourcekitd::KeySimplified("key.simplified");
-UIdent sourcekitd::KeyRangeContent("key.rangecontent");
-UIdent sourcekitd::KeyCancelOnSubsequentRequest("key.cancel_on_subsequent_request");
-
-UIdent sourcekitd::KeyIsDeprecated("key.is_deprecated");
-UIdent sourcekitd::KeyIsUnavailable("key.is_unavailable");
-UIdent sourcekitd::KeyIsOptional("key.is_optional");
-UIdent sourcekitd::KeyPlatform("key.platform");
-UIdent sourcekitd::KeyMessage("key.message");
-UIdent sourcekitd::KeyIntroduced("key.introduced");
-UIdent sourcekitd::KeyDeprecated("key.deprecated");
-UIdent sourcekitd::KeyObsoleted("key.obsoleted");
-UIdent sourcekitd::KeyRemoveCache("key.removecache");
-UIdent sourcekitd::KeyTypeInterface("key.typeinterface");
-UIdent sourcekitd::KeyTypeUsr("key.typeusr");
-UIdent sourcekitd::KeyContainerTypeUsr("key.containertypeusr");
-UIdent sourcekitd::KeyModuleGroups("key.modulegroups");
-
-UIdent sourcekitd::KeyBaseName("key.basename");
-UIdent sourcekitd::KeyArgNames("key.argnames");
-UIdent sourcekitd::KeySelectorPieces("key.selectorpieces");
-UIdent sourcekitd::KeyNameKind("key.namekind");
-UIdent sourcekitd::KeyLocalizationKey("key.localization_key");
-UIdent sourcekitd::KeyIsZeroArgSelector("key.is_zero_arg_selector");
-
-UIdent sourcekitd::KeySwiftVersion("key.swift_version");
-
-/// \brief Order for the keys to use when emitting the debug description of
+/// Order for the keys to use when emitting the debug description of
 /// dictionaries.
 static UIdent *OrderedKeys[] = {
-  &KeyVersionMajor,
-  &KeyVersionMinor,
-  &KeyResults,
-  &KeyRequest,
-  &KeyNotification,
-  &KeyKind,
-  &KeyAccessibility,
-  &KeySetterAccessibility,
-  &KeyKeyword,
-  &KeyName,
-  &KeyUSR,
-  &KeyOriginalUSR,
-  &KeyDefaultImplementationOf,
-  &KeyInterestedUSR,
-  &KeyGenericParams,
-  &KeyGenericRequirements,
-  &KeyDocFullAsXML,
-  &KeyLine,
-  &KeyColumn,
-  &KeyReceiverUSR,
-  &KeyIsDynamic,
-  &KeyFilePath,
-  &KeyModuleInterfaceName,
-  &KeyHash,
-  &KeyCompilerArgs,
-  &KeySeverity,
-  &KeyOffset,
-  &KeyLength,
-  &KeySourceFile,
-  &KeySourceText,
-  &KeyEnableSyntaxMap,
-  &KeyEnableStructure,
-  &KeyDescription,
-  &KeyTypeName,
-  &KeyRuntimeName,
-  &KeySelectorName,
-  &KeyAnnotatedDecl,
-  &KeyFullyAnnotatedDecl,
-  &KeyDocBrief,
-  &KeyContext,
-  &KeyModuleImportDepth,
-  &KeyNumBytesToErase,
-  &KeyNotRecommended,
-  &KeyAnnotations,
-  &KeyDiagnosticStage,
-  &KeySyntaxMap,
-  &KeyIsSystem,
-  &KeyRelated,
-  &KeyInherits,
-  &KeyConforms,
-  &KeyExtends,
-  &KeyDependencies,
-  &KeyEntities,
-  &KeyNameOffset,
-  &KeyNameLength,
-  &KeyBodyOffset,
-  &KeyBodyLength,
-  &KeyThrowOffset,
-  &KeyThrowLength,
-  &KeyIsLocal,
-  &KeyInheritedTypes,
-  &KeyAttributes,
-  &KeyAttribute,
-  &KeyElements,
-  &KeySubStructure,
-  &KeyRanges,
-  &KeyFixits,
-  &KeyDiagnostics,
-  &KeyFormatOptions,
-  &KeyCodeCompleteOptions,
-  &KeyFilterRules,
-  &KeyNextRequestStart,
-  &KeyPopular,
-  &KeyUnpopular,
-  &KeyHide,
-
-  &KeyPlatform,
-  &KeyIsDeprecated,
-  &KeyIsUnavailable,
-  &KeyIsOptional,
-  &KeyMessage,
-  &KeyIntroduced,
-  &KeyDeprecated,
-  &KeyObsoleted,
-  &KeyRemoveCache,
-
-  &KeyTypeInterface,
-  &KeyTypeUsr,
-  &KeyContainerTypeUsr,
-  &KeyModuleGroups,
-
-  &KeyBaseName,
-  &KeyArgNames,
-  &KeySelectorPieces,
-  &KeyNameKind,
-  &KeyLocalizationKey,
-  &KeyIsZeroArgSelector,
-
-  &KeySwiftVersion,
+#define KEY(NAME, CONTENT) &Key##NAME,
+#include "SourceKit/Core/ProtocolUIDs.def"
 };
 
 static unsigned findPrintOrderForDictKey(UIdent Key) {
@@ -325,6 +114,11 @@ public:
       size_t Len = sourcekitd_uid_get_length(UID);
       const char *Ptr = sourcekitd_uid_get_string_ptr(UID);
       return static_cast<ImplClass*>(this)->visitUID(StringRef(Ptr, Len));
+    }
+    case SOURCEKITD_VARIANT_TYPE_DATA: {
+      const void *Data = sourcekitd_variant_data_get_ptr(Obj);
+      size_t Size = sourcekitd_variant_data_get_size(Obj);
+      return static_cast<ImplClass*>(this)->visitData(Data, Size);
     }
     }
   }
@@ -775,6 +569,26 @@ sourcekitd_variant_string_get_ptr(sourcekitd_variant_t obj) {
   // Default implementation:
   // Assume this is a variant encapsulating the basic type.
   return (const char *)obj.data[1];
+}
+
+size_t
+sourcekitd_variant_data_get_size(sourcekitd_variant_t obj) {
+  if (auto fn = VAR_FN(obj, data_get_size))
+    return fn(obj);
+
+  // Default implementation:
+  // We store the byte's length in data[2] and its data in data[1]
+  return obj.data[2];
+}
+
+const void *
+sourcekitd_variant_data_get_ptr(sourcekitd_variant_t obj) {
+  if (auto fn = VAR_FN(obj, data_get_ptr))
+    return fn(obj);
+
+  // Default implementation:
+  // We store the byte's length in data[2] and its data in data[1]
+  return reinterpret_cast<void *>(obj.data[1]);
 }
 
 sourcekitd_uid_t

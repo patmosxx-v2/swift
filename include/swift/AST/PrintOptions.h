@@ -16,14 +16,18 @@
 #include "swift/Basic/STLExtras.h"
 #include "swift/AST/AttrKind.h"
 #include "swift/AST/Identifier.h"
+#include "swift/AST/TypeOrExtensionDecl.h"
 #include "llvm/ADT/Optional.h"
+#include "llvm/ADT/DenseMap.h"
 #include <limits.h>
 #include <vector>
 
 namespace swift {
+class ASTPrinter;
 class GenericEnvironment;
 class CanType;
 class Decl;
+class Pattern;
 class ValueDecl;
 class ExtensionDecl;
 class NominalTypeDecl;
@@ -35,44 +39,21 @@ enum DeclAttrKind : unsigned;
 class SynthesizedExtensionAnalyzer;
 struct PrintOptions;
 
+
 /// Necessary information for archetype transformation during printing.
 struct TypeTransformContext {
   TypeBase *BaseType;
-  NominalTypeDecl *Nominal = nullptr;
+  TypeOrExtensionDecl Decl;
 
   explicit TypeTransformContext(Type T);
-  explicit TypeTransformContext(NominalTypeDecl* NTD);
+  explicit TypeTransformContext(TypeOrExtensionDecl D);
 
   Type getBaseType() const;
-  NominalTypeDecl *getNominal() const;
+  TypeOrExtensionDecl getDecl() const;
+
+  DeclContext *getDeclContext() const;
 
   bool isPrintingSynthesizedExtension() const;
-};
-
-typedef std::pair<ExtensionDecl*, bool> ExtensionAndIsSynthesized;
-typedef llvm::function_ref<void(ArrayRef<ExtensionAndIsSynthesized>)>
-  ExtensionGroupOperation;
-
-class SynthesizedExtensionAnalyzer {
-  struct Implementation;
-  Implementation &Impl;
-public:
-  SynthesizedExtensionAnalyzer(NominalTypeDecl *Target,
-                               PrintOptions Options,
-                               bool IncludeUnconditional = true);
-  ~SynthesizedExtensionAnalyzer();
-
-  enum class MergeGroupKind : char {
-    All,
-    MergeableWithTypeDef,
-    UnmergeableWithTypeDef,
-  };
-
-  void forEachExtensionMergeGroup(MergeGroupKind Kind,
-                                  ExtensionGroupOperation Fn);
-  bool isInSynthesizedExtension(const ValueDecl *VD);
-  bool shouldPrintRequirement(ExtensionDecl *ED, StringRef Req);
-  bool hasMergeGroup(MergeGroupKind Kind);
 };
 
 class BracketOptions {
@@ -131,43 +112,65 @@ public:
   bool operator!=(AnyAttrKind K) const { return !(*this == K); }
 };
 
+struct ShouldPrintChecker {
+  virtual bool shouldPrint(const Decl *D, const PrintOptions &Options);
+  bool shouldPrint(const Pattern *P, const PrintOptions &Options);
+  virtual ~ShouldPrintChecker() = default;
+};
+
 /// Options for printing AST nodes.
 ///
 /// A default-constructed PrintOptions is suitable for printing to users;
 /// there are also factory methods for specific use cases.
 struct PrintOptions {
-  /// \brief The indentation width.
+  /// The indentation width.
   unsigned Indent = 2;
 
-  /// \brief Whether to print function definitions.
+  /// Whether to print function definitions.
   bool FunctionDefinitions = false;
 
-  /// \brief Whether to print '{ get set }' on readwrite computed properties.
+  /// Whether to print '{ get set }' on readwrite computed properties.
   bool PrintGetSetOnRWProperties = true;
 
-  /// \brief Whether to print *any* accessors on properties.
+  /// Whether to print *any* accessors on properties.
   bool PrintPropertyAccessors = true;
 
-  /// \brief Whether to print the accessors of a property abstractly,
-  /// i.e. always as get and set rather than the specific accessors
-  /// actually used to implement the property.
+  /// Whether to print the accessors of a property abstractly,
+  /// i.e. always as:
+  /// ```
+  /// var x: Int { get set }
+  /// ```
+  /// rather than the specific accessors actually used to implement the
+  /// property.
   ///
   /// Printing function definitions takes priority over this setting.
   bool AbstractAccessors = true;
 
-  /// \brief Whether to print type definitions.
+  /// Whether to print a property with only a single getter using the shorthand
+  /// ```
+  /// var x: Int { return y }
+  /// ```
+  /// vs.
+  /// ```
+  /// var x: Int {
+  ///   get { return y }
+  /// }
+  /// ```
+  bool CollapseSingleGetterProperty = true;
+
+  /// Whether to print the bodies of accessors in protocol context.
+  bool PrintAccessorBodiesInProtocols = false;
+
+  /// Whether to print type definitions.
   bool TypeDefinitions = false;
 
-  /// \brief Whether to print variable initializers.
+  /// Whether to print variable initializers.
   bool VarInitializers = false;
 
-  /// \brief Whether to print a placeholder for default parameters.
-  bool PrintDefaultParameterPlaceholder = true;
-
-  /// \brief Whether to print enum raw value expressions.
+  /// Whether to print enum raw value expressions.
   bool EnumRawValues = false;
 
-  /// \brief Whether to prefer printing TypeReprs instead of Types,
+  /// Whether to prefer printing TypeReprs instead of Types,
   /// if a TypeRepr is available.  This allows us to print the original
   /// spelling of the type name.
   ///
@@ -175,18 +178,22 @@ struct PrintOptions {
   /// it to the user.
   bool PreferTypeRepr = true;
 
-  /// \brief Whether to print fully qualified Types.
+  /// Whether to print fully qualified Types.
   bool FullyQualifiedTypes = false;
 
-  /// \brief Print fully qualified types if our heuristics say that a certain
+  /// Print fully qualified types if our heuristics say that a certain
   /// type might be ambiguous.
   bool FullyQualifiedTypesIfAmbiguous = false;
 
-  /// \brief Print Swift.Array and Swift.Optional with sugared syntax
+  /// Print Swift.Array and Swift.Optional with sugared syntax
   /// ([] and ?), even if there are no sugar type nodes.
   bool SynthesizeSugarOnTypes = false;
 
-  /// \brief If true, the printer will explode a pattern like this:
+  /// If true, null types in the AST will be printed as "<null>". If
+  /// false, the compiler will trap.
+  bool AllowNullTypes = true;
+
+  /// If true, the printer will explode a pattern like this:
   /// \code
   ///   var (a, b) = f()
   /// \endcode
@@ -203,10 +210,10 @@ struct PrintOptions {
   /// into multiple case declarations.
   bool ExplodeEnumCaseDecls = false;
 
-  /// \brief Whether to print implicit parts of the AST.
+  /// Whether to print implicit parts of the AST.
   bool SkipImplicit = false;
 
-  /// \brief Whether to print unavailable parts of the AST.
+  /// Whether to print unavailable parts of the AST.
   bool SkipUnavailable = false;
 
   /// Whether to skip internal stdlib declarations.
@@ -231,16 +238,13 @@ struct PrintOptions {
   /// Whether to skip printing 'import' declarations.
   bool SkipImports = false;
 
-  /// \brief Whether to skip printing overrides and witnesses for
+  /// Whether to skip printing overrides and witnesses for
   /// protocol requirements.
   bool SkipOverrides = false;
 
-  /// Whether to skip parameter type attributes
-  bool SkipParameterTypeAttributes = false;
-
   /// Whether to skip placeholder members.
   bool SkipMissingMemberPlaceholders = true;
-
+  
   /// Whether to print a long attribute like '\@available' on a separate line
   /// from the declaration or other attributes.
   bool PrintLongAttrsOnSeparateLines = false;
@@ -252,8 +256,9 @@ struct PrintOptions {
   bool PrintUserInaccessibleAttrs = true;
 
   /// List of attribute kinds that should not be printed.
-  std::vector<AnyAttrKind> ExcludeAttrList =
-      { DAK_Transparent, DAK_Effects, DAK_FixedLayout };
+  std::vector<AnyAttrKind> ExcludeAttrList = {DAK_Transparent, DAK_Effects,
+                                              DAK_FixedLayout,
+                                              DAK_ImplicitlyUnwrappedOptional};
 
   /// List of attribute kinds that should be printed exclusively.
   /// Empty means allow all.
@@ -269,15 +274,15 @@ struct PrintOptions {
   /// Whether to print 'override' keyword on overridden decls.
   bool PrintOverrideKeyword = true;
 
-  /// Whether to print accessibility information on all value decls.
-  bool PrintAccessibility = false;
+  /// Whether to print access control information on all value decls.
+  bool PrintAccess = false;
 
-  /// If \c PrintAccessibility is true, this determines whether to print
+  /// If \c PrintAccess is true, this determines whether to print
   /// 'internal' keyword.
-  bool PrintInternalAccessibilityKeyword = true;
+  bool PrintInternalAccessKeyword = true;
 
   /// Print all decls that have at least this level of access.
-  Accessibility AccessibilityFilter = Accessibility::Private;
+  AccessLevel AccessFilter = AccessLevel::Private;
 
   /// Print IfConfigDecls.
   bool PrintIfConfig = true;
@@ -294,10 +299,14 @@ struct PrintOptions {
   /// Whether to print the extensions from conforming protocols.
   bool PrintExtensionFromConformingProtocols = false;
 
+  std::shared_ptr<ShouldPrintChecker> CurrentPrintabilityChecker =
+    std::make_shared<ShouldPrintChecker>();
+
   enum class ArgAndParamPrintingMode {
     ArgumentOnly,
     MatchSource,
     BothAlways,
+    EnumElement,
   };
 
   /// Whether to print the doc-comment from the conformance if a member decl
@@ -313,12 +322,12 @@ struct PrintOptions {
   ArgAndParamPrintingMode ArgAndParamPrinting =
       ArgAndParamPrintingMode::MatchSource;
 
-  /// \brief Whether to print documentation comments attached to declarations.
+  /// Whether to print documentation comments attached to declarations.
   /// Note that this may print documentation comments from related declarations
   /// (e.g. the overridden method in the superclass) if such comment is found.
   bool PrintDocumentationComments = false;
 
-  /// \brief Whether to print regular comments from clang module headers.
+  /// Whether to print regular comments from clang module headers.
   bool PrintRegularClangComments = false;
 
   /// When true, printing interface from a source file will print the original
@@ -330,20 +339,33 @@ struct PrintOptions {
   /// of the alias.
   bool PrintNameAliasUnderlyingType = false;
 
-  /// \brief Print dependent types as references into this generic environment.
+  /// When printing an Optional<T>, rather than printing 'T?', print
+  /// 'T!'. Used as a modifier only when we know we're printing
+  /// something that was declared as an implicitly unwrapped optional
+  /// at the top level. This is stripped out of the printing options
+  /// for optionals that are nested within other optionals.
+  bool PrintOptionalAsImplicitlyUnwrapped = false;
+
+  /// Replaces the name of private and internal properties of types with '_'.
+  bool OmitNameOfInaccessibleProperties = false;
+
+  /// Print dependent types as references into this generic environment.
   GenericEnvironment *GenericEnv = nullptr;
 
-  /// \brief Print types with alternative names from their canonical names.
+  /// Print types with alternative names from their canonical names.
   llvm::DenseMap<CanType, Identifier> *AlternativeTypeNames = nullptr;
 
-  /// \brief The module in which the printer is used. Determines if the module
+  /// The module in which the printer is used. Determines if the module
   /// name should be printed when printing a type.
   ModuleDecl *CurrentModule = nullptr;
 
-  /// \brief The information for converting archetypes to specialized types.
+  /// The information for converting archetypes to specialized types.
   llvm::Optional<TypeTransformContext> TransformContext;
 
   bool PrintAsMember = false;
+  
+  /// Whether to print parameter specifiers as 'let' and 'var'.
+  bool PrintParameterSpecifiers = false;
 
   /// \see ShouldQualifyNestedDeclarations
   enum class QualifyNestedDeclarations {
@@ -358,12 +380,14 @@ struct PrintOptions {
   QualifyNestedDeclarations ShouldQualifyNestedDeclarations =
       QualifyNestedDeclarations::Never;
 
-  /// \brief If this is not \c nullptr then functions (including accessors and
-  /// constructors) will be printed with a body that is determined by this
-  /// function.
-  std::function<std::string(const ValueDecl *)> FunctionBody;
+  /// If this is not \c nullptr then function bodies (including accessors
+  /// and constructors) will be printed by this function.
+  std::function<void(const ValueDecl *, ASTPrinter &)> FunctionBody;
 
   BracketOptions BracketOptions;
+
+  // This is explicit to guarantee that it can be called from LLDB.
+  PrintOptions() {}
 
   bool excludeAttrKind(AnyAttrKind K) const {
     if (std::any_of(ExcludeAttrList.begin(), ExcludeAttrList.end(),
@@ -380,7 +404,6 @@ struct PrintOptions {
     PrintOptions result;
     result.TypeDefinitions = true;
     result.VarInitializers = true;
-    result.PrintDefaultParameterPlaceholder = true;
     result.PrintDocumentationComments = true;
     result.PrintRegularClangComments = true;
     result.PrintLongAttrsOnSeparateLines = true;
@@ -390,7 +413,7 @@ struct PrintOptions {
   /// Retrieve the set of options suitable for diagnostics printing.
   static PrintOptions printForDiagnostics() {
     PrintOptions result = printVerbose();
-    result.PrintAccessibility = true;
+    result.PrintAccess = true;
     result.Indent = 4;
     result.FullyQualifiedTypesIfAmbiguous = true;
     result.SynthesizeSugarOnTypes = true;
@@ -398,12 +421,14 @@ struct PrintOptions {
     result.PrintImplicitAttrs = false;
     result.ExcludeAttrList.push_back(DAK_Exported);
     result.ExcludeAttrList.push_back(DAK_Inline);
+    result.ExcludeAttrList.push_back(DAK_Optimize);
     result.ExcludeAttrList.push_back(DAK_Rethrows);
     result.PrintOverrideKeyword = false;
-    result.AccessibilityFilter = Accessibility::Public;
+    result.AccessFilter = AccessLevel::Public;
     result.PrintIfConfig = false;
     result.ShouldQualifyNestedDeclarations =
         QualifyNestedDeclarations::TypesOnly;
+    result.PrintDocumentationComments = false;
     return result;
   }
 
@@ -420,21 +445,38 @@ struct PrintOptions {
     result.ElevateDocCommentFromConformance = true;
     result.ShouldQualifyNestedDeclarations =
         QualifyNestedDeclarations::Always;
+    result.PrintDocumentationComments = true;
     return result;
   }
 
+  /// Retrieve the set of options suitable for parseable module interfaces.
+  ///
+  /// This is a format that will be parsed again later, so the output must be
+  /// consistent and well-formed.
+  ///
+  /// \see swift::emitParseableInterface
+  static PrintOptions printParseableInterfaceFile();
+
+  static PrintOptions printModuleInterface();
   static PrintOptions printTypeInterface(Type T);
 
   void setBaseType(Type T);
 
-  void initForSynthesizedExtension(NominalTypeDecl *D);
+  void initForSynthesizedExtension(TypeOrExtensionDecl D);
 
   void clearSynthesizedExtension();
+
+  bool shouldPrint(const Decl* D) {
+    return CurrentPrintabilityChecker->shouldPrint(D, *this);
+  }
+  bool shouldPrint(const Pattern* P) {
+    return CurrentPrintabilityChecker->shouldPrint(P, *this);
+  }
 
   /// Retrieve the print options that are suitable to print the testable interface.
   static PrintOptions printTestableInterface() {
     PrintOptions result = printInterface();
-    result.AccessibilityFilter = Accessibility::Internal;
+    result.AccessFilter = AccessLevel::Internal;
     return result;
   }
 
@@ -442,26 +484,14 @@ struct PrintOptions {
   /// swift file.
   static PrintOptions printSwiftFileInterface() {
     PrintOptions result = printInterface();
-    result.AccessibilityFilter = Accessibility::Internal;
+    result.AccessFilter = AccessLevel::Internal;
     result.EmptyLineBetweenMembers = true;
     return result;
   }
 
   /// Retrieve the set of options suitable for interface generation for
   /// documentation purposes.
-  static PrintOptions printDocInterface() {
-    PrintOptions result = PrintOptions::printInterface();
-    result.PrintAccessibility = false;
-    result.SkipUnavailable = false;
-    result.ExcludeAttrList.push_back(DAK_Available);
-    result.ArgAndParamPrinting =
-      PrintOptions::ArgAndParamPrintingMode::BothAlways;
-    result.PrintDocumentationComments = false;
-    result.PrintRegularClangComments = false;
-    result.PrintAccessibility = false;
-    result.PrintFunctionRepresentationAttrs = false;
-    return result;
-  }
+  static PrintOptions printDocInterface();
 
   /// Retrieve the set of options suitable for printing SIL functions.
   static PrintOptions printSIL() {
@@ -472,6 +502,7 @@ struct PrintOptions {
     result.PrintForSIL = true;
     result.PrintInSILBody = true;
     result.PreferTypeRepr = false;
+    result.PrintIfConfig = false;
     return result;
   }
 
@@ -481,7 +512,7 @@ struct PrintOptions {
     return result;
   }
 
-  /// \brief Retrieve the set of options that prints everything.
+  /// Retrieve the set of options that prints everything.
   ///
   /// This is only intended for debug output.
   static PrintOptions printEverything() {
@@ -490,7 +521,7 @@ struct PrintOptions {
     result.ExcludeAttrList.push_back(DAK_FixedLayout);
     result.PrintStorageRepresentationAttrs = true;
     result.AbstractAccessors = false;
-    result.PrintAccessibility = true;
+    result.PrintAccess = true;
     result.SkipEmptyExtensionDecls = false;
     result.SkipMissingMemberPlaceholders = false;
     return result;
@@ -500,7 +531,6 @@ struct PrintOptions {
   static PrintOptions printQuickHelpDeclaration() {
     PrintOptions PO;
     PO.EnumRawValues = true;
-    PO.PrintDefaultParameterPlaceholder = true;
     PO.PrintImplicitAttrs = false;
     PO.PrintFunctionRepresentationAttrs = false;
     PO.PrintDocumentationComments = false;
@@ -508,6 +538,7 @@ struct PrintOptions {
     PO.SkipPrivateStdlibDecls = true;
     PO.ExplodeEnumCaseDecls = true;
     PO.ShouldQualifyNestedDeclarations = QualifyNestedDeclarations::TypesOnly;
+    PO.PrintParameterSpecifiers = true;
     return PO;
   }
 };

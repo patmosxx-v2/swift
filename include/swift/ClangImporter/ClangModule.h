@@ -29,7 +29,7 @@ namespace swift {
 class ASTContext;
 class ModuleLoader;
 
-/// \brief Represents a Clang module that has been imported into Swift.
+/// Represents a Clang module that has been imported into Swift.
 class ClangModuleUnit final : public LoadedFile {
   ClangImporter::Implementation &owner;
   const clang::Module *clangModule;
@@ -45,7 +45,7 @@ public:
   ClangModuleUnit(ModuleDecl &M, ClangImporter::Implementation &owner,
                   const clang::Module *clangModule);
 
-  /// \brief Retrieve the underlying Clang module.
+  /// Retrieve the underlying Clang module.
   ///
   /// This will be null if the module unit represents the imported headers.
   const clang::Module *getClangModule() const { return clangModule; }
@@ -54,13 +54,22 @@ public:
   bool isTopLevel() const;
 
   /// Returns the Swift module that overlays this Clang module.
-  ModuleDecl *getAdapterModule() const;
+  ModuleDecl *getAdapterModule() const override;
+
+  /// Retrieve the "exported" name of the module, which is usually the module
+  /// name, but might be the name of the public module through which this
+  /// (private) module is re-exported.
+  std::string getExportedModuleName() const;
 
   virtual bool isSystemModule() const override;
 
   virtual void lookupValue(ModuleDecl::AccessPathTy accessPath,
                            DeclName name, NLKind lookupKind,
                            SmallVectorImpl<ValueDecl*> &results) const override;
+
+  virtual TypeDecl *
+  lookupNestedType(Identifier name,
+                   const NominalTypeDecl *baseType) const override;
 
   virtual void lookupVisibleDecls(ModuleDecl::AccessPathTy accessPath,
                                   VisibleDeclConsumer &consumer,
@@ -98,7 +107,7 @@ public:
 
   virtual StringRef getFilename() const override;
 
-  virtual const clang::Module *getUnderlyingClangModule() override {
+  virtual const clang::Module *getUnderlyingClangModule() const override {
     return getClangModule();
   }
 

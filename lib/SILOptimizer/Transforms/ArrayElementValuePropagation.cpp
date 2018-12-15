@@ -190,7 +190,8 @@ bool ArrayAllocation::recursivelyCollectUses(ValueBase *Def) {
   for (auto *Opd : Def->getUses()) {
     auto *User = Opd->getUser();
     // Ignore reference counting and debug instructions.
-    if (isa<RefCountingInst>(User) || isa<DebugValueInst>(User))
+    if (isa<RefCountingInst>(User) ||
+        isa<DebugValueInst>(User))
       continue;
 
     // Array value projection.
@@ -296,8 +297,8 @@ public:
     if (Repls.empty())
       return false;
 
-    DEBUG(llvm::dbgs() << "Array append contentsOf calls replaced in "
-                       << Fn.getName() << " (" << Repls.size() << ")\n");
+    LLVM_DEBUG(llvm::dbgs() << "Array append contentsOf calls replaced in "
+                            << Fn.getName() << " (" << Repls.size() << ")\n");
 
     FuncDecl *AppendFnDecl = Ctx.getArrayAppendElementDecl();
     if (!AppendFnDecl)
@@ -320,19 +321,22 @@ public:
     for (const ArrayAllocation::AppendContentOfReplacement &Repl : Repls) {
       ArraySemanticsCall AppendContentsOf(Repl.AppendContentOfCall);
       assert(AppendContentsOf && "Must be AppendContentsOf call");
-      
+
+      NominalTypeDecl *AppendSelfArray = AppendContentsOf.getSelf()->getType().
+        getASTType()->getAnyNominal();
+
+      // In case if it's not an Array, but e.g. an ContiguousArray
+      if (AppendSelfArray != Ctx.getArrayDecl())
+        continue;
+
       SILType ArrayType = Repl.Array->getType();
-      auto *NTD = ArrayType.getSwiftRValueType()->getAnyNominal();
-      SubstitutionMap ArraySubMap = ArrayType.getSwiftRValueType()
+      auto *NTD = ArrayType.getASTType()->getAnyNominal();
+      SubstitutionMap ArraySubMap = ArrayType.getASTType()
         ->getContextSubstitutionMap(M.getSwiftModule(), NTD);
       
-      GenericSignature *Sig = NTD->getGenericSignature();
-      assert(Sig && "Array type must have generic signature");
-      SmallVector<Substitution, 4> Subs;
-      Sig->getSubstitutions(ArraySubMap, Subs);
-      
       AppendContentsOf.replaceByAppendingValues(M, AppendFn, ReserveFn,
-                                                Repl.ReplacementValues, Subs);
+                                                Repl.ReplacementValues,
+                                                ArraySubMap);
     }
     return true;
   }
@@ -358,7 +362,7 @@ public:
       }
     }
 
-    DEBUG(if (!GetElementReplacements.empty()) {
+    LLVM_DEBUG(if (!GetElementReplacements.empty()) {
       llvm::dbgs() << "Array elements replaced in " << Fn.getName() << " ("
                    << GetElementReplacements.size() << ")\n";
     });

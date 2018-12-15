@@ -2,7 +2,7 @@
 //
 // This source file is part of the Swift.org open source project
 //
-// Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
+// Copyright (c) 2014 - 2018 Apple Inc. and the Swift project authors
 // Licensed under Apache License v2.0 with Runtime Library Exception
 //
 // See https://swift.org/LICENSE.txt for license information
@@ -38,7 +38,7 @@ class SourceManager;
 namespace constraints {
   class ConstraintSystem;
 
-/// \brief Locates a given constraint within the expression being
+/// Locates a given constraint within the expression being
 /// type-checked, which may refer down into subexpressions and parts of
 /// the types of those subexpressions.
 ///
@@ -50,69 +50,61 @@ namespace constraints {
 /// to indicate constraints on its argument or result type.
 class ConstraintLocator : public llvm::FoldingSetNode {
 public:
-  /// \brief Describes the kind of a particular path element, e.g.,
+  /// Describes the kind of a particular path element, e.g.,
   /// "tuple element", "call result", "base of member lookup", etc.
   enum PathElementKind : unsigned char {
-    /// \brief The argument of function application.
+    /// The argument of function application.
     ApplyArgument,
-    /// \brief The function being applied.
+    /// The function being applied.
     ApplyFunction,
     /// Matching an argument to a parameter.
     ApplyArgToParam,
-    /// \brief An archetype being opened.
+    /// A generic parameter being opened.
     ///
-    /// Also contains the archetype itself.
-    Archetype,
-    /// An associated type reference.
-    ///
-    /// Contains the associated type itself.
-    AssociatedType,
-    /// \brief The argument type of a function.
+    /// Also contains the generic parameter type itself.
+    GenericParameter,
+    /// The argument type of a function.
     FunctionArgument,
-    /// \brief The result type of a function.
+    /// The result type of a function.
     FunctionResult,
-    /// \brief A tuple element referenced by position.
+    /// A tuple element referenced by position.
     TupleElement,
-    /// \brief A tuple element referenced by name.
+    /// A tuple element referenced by name.
     NamedTupleElement,
-    /// \brief An optional payload.
+    /// An optional payload.
     OptionalPayload,
-    /// \brief A generic argument.
+    /// A generic argument.
     /// FIXME: Add support for named generic arguments?
     GenericArgument,
-    /// \brief A member.
+    /// A member.
     /// FIXME: Do we need the actual member name here?
     Member,
-    /// \brief An unresolved member.
+    /// An unresolved member.
     UnresolvedMember,
-    /// \brief The base of a member expression.
+    /// The base of a member expression.
     MemberRefBase,
-    /// \brief The lookup for a subscript member.
+    /// The lookup for a subscript member.
     SubscriptMember,
-    /// \brief The index of a subscript expression.
-    SubscriptIndex,
-    /// \brief The result of a subscript expression.
-    SubscriptResult,
-    /// \brief The lookup for a constructor member.
+    /// The lookup for a constructor member.
     ConstructorMember,
-    /// \brief Rvalue adjustment.
-    RvalueAdjustment,
-    /// \brief The result of a closure.
+    /// An implicit @lvalue-to-inout conversion; only valid for operator
+    /// arguments.
+    LValueConversion,
+    /// RValue adjustment.
+    RValueAdjustment,
+    /// The result of a closure.
     ClosureResult,
-    /// \brief The parent of a nested type.
+    /// The parent of a nested type.
     ParentType,
-    /// \brief The instance of a metatype type.
+    /// The instance of a metatype type.
     InstanceType,
-    /// \brief The generic type of a sequence.
+    /// The generic type of a sequence.
     SequenceIteratorProtocol,
-    /// \brief The element type of a generator.
+    /// The element type of a generator.
     GeneratorElementType,
-    /// \brief The element of an array type.
-    ArrayElementType,
-    /// \brief The scalar type of a tuple type.
-    ScalarToTuple,
-    /// \brief The load of an lvalue.
-    Load,
+    /// An argument passed in an autoclosure parameter
+    /// position, which must match the autoclosure return type.
+    AutoclosureResult,
     /// The requirement that we're matching during protocol conformance
     /// checking.
     Requirement,
@@ -123,46 +115,57 @@ public:
     OpenedGeneric,
     /// A component of a key path.
     KeyPathComponent,
+    /// The Nth conditional requirement in the parent locator's conformance.
+    ConditionalRequirement,
+    /// A single requirement placed on the type parameters.
+    TypeParameterRequirement,
+    /// Locator for a binding from an IUO disjunction choice.
+    ImplicitlyUnwrappedDisjunctionChoice,
+    /// A result of an expression involving dynamic lookup.
+    DynamicLookupResult,
+    /// The desired contextual type passed in to the constraint system.
+    ContextualType,
   };
 
-  /// \brief Determine the number of numeric values used for the given path
+  /// Determine the number of numeric values used for the given path
   /// element kind.
   static unsigned numNumericValuesInPathElement(PathElementKind kind) {
     switch (kind) {
     case ApplyArgument:
     case ApplyFunction:
-    case Archetype:
-    case AssociatedType:
+    case GenericParameter:
     case FunctionArgument:
     case FunctionResult:
     case OptionalPayload:
     case Member:
     case MemberRefBase:
     case UnresolvedMember:
-    case SubscriptIndex:
     case SubscriptMember:
-    case SubscriptResult:
     case ConstructorMember:
-    case RvalueAdjustment:
+    case LValueConversion:
+    case RValueAdjustment:
     case ClosureResult:
     case ParentType:
     case InstanceType:
     case SequenceIteratorProtocol:
     case GeneratorElementType:
-    case ArrayElementType:
-    case ScalarToTuple:
-    case Load:
+    case AutoclosureResult:
     case Requirement:
     case Witness:
     case OpenedGeneric:
+    case ImplicitlyUnwrappedDisjunctionChoice:
+    case DynamicLookupResult:
+    case ContextualType:
       return 0;
 
     case GenericArgument:
     case NamedTupleElement:
     case TupleElement:
     case KeyPathComponent:
+    case ConditionalRequirement:
       return 1;
 
+    case TypeParameterRequirement:
     case ApplyArgToParam:
       return 2;
     }
@@ -189,30 +192,31 @@ public:
     case ApplyArgToParam:
     case SequenceIteratorProtocol:
     case GeneratorElementType:
-    case ArrayElementType:
     case ClosureResult:
     case ConstructorMember:
     case InstanceType:
-    case Load:
+    case AutoclosureResult:
     case OptionalPayload:
     case Member:
     case MemberRefBase:
     case UnresolvedMember:
     case ParentType:
-    case RvalueAdjustment:
-    case ScalarToTuple:
-    case SubscriptIndex:
+    case LValueConversion:
+    case RValueAdjustment:
     case SubscriptMember:
-    case SubscriptResult:
     case OpenedGeneric:
-    case Archetype:
-    case AssociatedType:
+    case GenericParameter:
     case GenericArgument:
     case NamedTupleElement:
     case TupleElement:
     case Requirement:
     case Witness:
     case KeyPathComponent:
+    case ConditionalRequirement:
+    case TypeParameterRequirement:
+    case ImplicitlyUnwrappedDisjunctionChoice:
+    case DynamicLookupResult:
+    case ContextualType:
       return 0;
 
     case FunctionArgument:
@@ -223,21 +227,19 @@ public:
     llvm_unreachable("Unhandled PathElementKind in switch.");
   }
 
-  template<unsigned N> struct incomplete;
-  
-  /// \brief One element in the path of a locator, which can include both
+  /// One element in the path of a locator, which can include both
   /// a kind (PathElementKind) and a value used to describe specific
   /// kinds further (e.g., the position of a tuple element).
   class PathElement {
-    /// \brief Describes the kind of data stored here.
+    /// Describes the kind of data stored here.
     enum StoredKind : unsigned char {
-      StoredArchetype,
+      StoredGenericParameter,
       StoredRequirement,
       StoredWitness,
       StoredKindAndValue
     };
 
-    /// \brief The actual storage for the path element, which involves both a
+    /// The actual storage for the path element, which involves both a
     /// kind and (potentially) a value.
     ///
     /// The current storage involves a two-bit "storage kind", which selects
@@ -249,16 +251,16 @@ public:
     /// \note The "storage kind" is stored in the  \c storedKind field.
     uint64_t storage : 62;
 
-    /// \brief The kind of value stored in \c storage. Valid values are those
+    /// The kind of value stored in \c storage. Valid values are those
     /// from the StoredKind enum.
     uint64_t storedKind : 2;
 
-    /// \brief Encode a path element kind and a value into the storage format.
+    /// Encode a path element kind and a value into the storage format.
     static uint64_t encodeStorage(PathElementKind kind, unsigned value) {
       return ((uint64_t)value << 8) | kind;
     }
 
-    /// \brief Decode a storage value into path element kind and value.
+    /// Decode a storage value into path element kind and value.
     static std::pair<PathElementKind, unsigned>
     decodeStorage(uint64_t storage) {
       return { (PathElementKind)((unsigned)storage & 0xFF), storage >> 8 };
@@ -289,13 +291,13 @@ public:
              "Path element requires value");
     }
 
-    PathElement(ArchetypeType *archetype)
-      : storage((reinterpret_cast<uintptr_t>(archetype) >> 2)),
-        storedKind(StoredArchetype)
+    PathElement(GenericTypeParamType *type)
+      : storage((reinterpret_cast<uintptr_t>(type) >> 2)),
+        storedKind(StoredGenericParameter)
     {
-      static_assert(alignof(ArchetypeType) >= 4,
+      static_assert(alignof(GenericTypeParamType) >= 4,
                     "archetypes insufficiently aligned");
-      assert(getArchetype() == archetype);
+      assert(getGenericParameter() == type);
     }
 
     PathElement(PathElementKind kind, ValueDecl *decl)
@@ -308,32 +310,25 @@ public:
               (kind == Witness && getWitness() == decl)));
     }
 
-    PathElement(AssociatedTypeDecl *decl)
-      : storage((reinterpret_cast<uintptr_t>(decl) >> 2)),
-        storedKind(StoredRequirement)
-    {
-      assert(getAssociatedType() == decl);
-    }
-
-    /// \brief Retrieve a path element for a tuple element referred to by
+    /// Retrieve a path element for a tuple element referred to by
     /// its position.
     static PathElement getTupleElement(unsigned position) {
       return PathElement(TupleElement, position);
     }
 
-    /// \brief Retrieve a path element for a tuple element referred to by
+    /// Retrieve a path element for a tuple element referred to by
     /// its name.
     static PathElement getNamedTupleElement(unsigned position) {
       return PathElement(NamedTupleElement, position);
     }
 
-    /// Retrieve a patch element for an argument/parameter comparison in a
+    /// Retrieve a path element for an argument/parameter comparison in a
     /// function application.
     static PathElement getApplyArgToParam(unsigned argIdx, unsigned paramIdx) {
       return PathElement(ApplyArgToParam, argIdx, paramIdx);
     }
 
-    /// \brief Retrieve a path element for a generic argument referred to by
+    /// Retrieve a path element for a generic argument referred to by
     /// its position.
     static PathElement getGenericArgument(unsigned position) {
       return PathElement(GenericArgument, position);
@@ -344,15 +339,25 @@ public:
       return PathElement(KeyPathComponent, position);
     }
 
-    /// \brief Retrieve the kind of path element.
+    /// Get a path element for a conditional requirement.
+    static PathElement getConditionalRequirementComponent(unsigned index) {
+      return PathElement(ConditionalRequirement, index);
+    }
+
+    static PathElement getTypeRequirementComponent(unsigned index,
+                                                   RequirementKind kind) {
+      return PathElement(TypeParameterRequirement, index,
+                         static_cast<unsigned>(kind));
+    }
+
+    /// Retrieve the kind of path element.
     PathElementKind getKind() const {
       switch (static_cast<StoredKind>(storedKind)) {
-      case StoredArchetype:
-        return Archetype;
+      case StoredGenericParameter:
+        return GenericParameter;
 
       case StoredRequirement:
-        return isa<AssociatedTypeDecl>(getRequirement()) ? AssociatedType
-                                                         : Requirement;
+        return Requirement;
 
       case StoredWitness:
         return Witness;
@@ -364,7 +369,7 @@ public:
       llvm_unreachable("Unhandled StoredKind in switch.");
     }
 
-    /// \brief Retrieve the value associated with this path element,
+    /// Retrieve the value associated with this path element,
     /// if it has one.
     unsigned getValue() const {
       unsigned numValues = numNumericValuesInPathElement(getKind());
@@ -378,7 +383,7 @@ public:
       return value >> 16;
     }
 
-    /// \brief Retrieve the second value associated with this path element,
+    /// Retrieve the second value associated with this path element,
     /// if it has one.
     unsigned getValue2() const {
       unsigned numValues = numNumericValuesInPathElement(getKind());
@@ -395,10 +400,12 @@ public:
       return reinterpret_cast<ValueDecl *>(storage << 2);
     }
 
-    /// \brief Retrieve the actual archetype for an archetype path element.
-    ArchetypeType *getArchetype() const {
-      assert(getKind() == Archetype && "Not an archetype path element");
-      return reinterpret_cast<ArchetypeType *>(storage << 2);
+    /// Retrieve the actual archetype for a generic parameter path
+    /// element.
+    GenericTypeParamType *getGenericParameter() const {
+      assert(getKind() == GenericParameter &&
+             "Not a generic parameter path element");
+      return reinterpret_cast<GenericTypeParamType *>(storage << 2);
     }
 
     /// Retrieve the declaration for a requirement path element.
@@ -408,13 +415,7 @@ public:
       return reinterpret_cast<ValueDecl *>(storage << 2);
     }
 
-    /// Retrieve the declaration for an associated type path element.
-    AssociatedTypeDecl *getAssociatedType() const {
-      assert(getKind() == AssociatedType && "Is not an associated type");
-      return reinterpret_cast<AssociatedTypeDecl *>(storage << 2);
-    }
-
-    /// \brief Return the summary flags for this particular element.
+    /// Return the summary flags for this particular element.
     unsigned getNewSummaryFlags() const {
       return getSummaryFlagsForPathElement(getKind());
     }
@@ -427,10 +428,10 @@ public:
     return flags;
   }
 
-  /// \brief Retrieve the expression that anchors this locator.
+  /// Retrieve the expression that anchors this locator.
   Expr *getAnchor() const { return anchor; }
   
-  /// \brief Retrieve the path that extends from the anchor to a specific
+  /// Retrieve the path that extends from the anchor to a specific
   /// subcomponent.
   ArrayRef<PathElement> getPath() const {
     // FIXME: Alignment.
@@ -440,22 +441,22 @@ public:
 
   unsigned getSummaryFlags() const { return summaryFlags; }
 
-  /// \brief Determines whether this locator is part of a function
+  /// Determines whether this locator is part of a function
   /// conversion.
   bool isFunctionConversion() const {
     return (getSummaryFlags() & IsFunctionConversion);
   }
 
-  /// \brief Produce a profile of this locator, for use in a folding set.
+  /// Produce a profile of this locator, for use in a folding set.
   static void Profile(llvm::FoldingSetNodeID &id, Expr *anchor,
                       ArrayRef<PathElement> path);
   
-  /// \brief Produce a profile of this locator, for use in a folding set.
+  /// Produce a profile of this locator, for use in a folding set.
   void Profile(llvm::FoldingSetNodeID &id) {
     Profile(id, anchor, getPath());
   }
   
-  /// \brief Produce a debugging dump of this locator.
+  /// Produce a debugging dump of this locator.
   LLVM_ATTRIBUTE_DEPRECATED(
       void dump(SourceManager *SM) LLVM_ATTRIBUTE_USED,
       "only for use within the debugger");
@@ -466,7 +467,7 @@ public:
   void dump(SourceManager *SM, raw_ostream &OS) LLVM_ATTRIBUTE_USED;
 
 private:
-  /// \brief Initialize a constraint locator with an anchor and a path.
+  /// Initialize a constraint locator with an anchor and a path.
   ConstraintLocator(Expr *anchor, ArrayRef<PathElement> path,
                     unsigned flags)
     : anchor(anchor), numPathElements(path.size()), summaryFlags(flags)
@@ -476,7 +477,7 @@ private:
               reinterpret_cast<PathElement *>(this + 1));
   }
 
-  /// \brief Create a new locator from an anchor and an array of path
+  /// Create a new locator from an anchor and an array of path
   /// elements.
   ///
   /// Note that this routine only handles the allocation and initialization
@@ -493,37 +494,37 @@ private:
     return new (mem) ConstraintLocator(anchor, path, flags);
   }
 
-  /// \brief The expression at which this locator is anchored.
+  /// The expression at which this locator is anchored.
   Expr *anchor;
 
-  /// \brief The number of path elements in this locator.
+  /// The number of path elements in this locator.
   ///
   /// The actual path elements are stored after the locator.
   unsigned numPathElements : 24;
 
-  /// \brief A set of flags summarizing interesting properties of the path.
+  /// A set of flags summarizing interesting properties of the path.
   unsigned summaryFlags : 7;
   
   friend class ConstraintSystem;
 };
 
-typedef ConstraintLocator::PathElement LocatorPathElt;
+using LocatorPathElt = ConstraintLocator::PathElement;
 
-/// \brief A simple stack-only builder object that constructs a
+/// A simple stack-only builder object that constructs a
 /// constraint locator without allocating memory.
 ///
 /// Use this object to build a path when passing components down the
 /// stack, e.g., when recursively breaking apart types as in \c matchTypes().
 class ConstraintLocatorBuilder {
-  /// \brief The constraint locator that this builder extends or the
+  /// The constraint locator that this builder extends or the
   /// previous builder in the chain.
   llvm::PointerUnion<ConstraintLocator *, ConstraintLocatorBuilder *>
     previous;
 
-  /// \brief The current path element, if there is one.
+  /// The current path element, if there is one.
   Optional<LocatorPathElt> element;
 
-  /// \brief The current set of flags.
+  /// The current set of flags.
   unsigned summaryFlags;
 
   ConstraintLocatorBuilder(llvm::PointerUnion<ConstraintLocator *,
@@ -538,7 +539,7 @@ public:
     : previous(locator), element(),
       summaryFlags(locator ? locator->getSummaryFlags() : 0) { }
 
-  /// \brief Retrieve a new path with the given path element added to it.
+  /// Retrieve a new path with the given path element added to it.
   ConstraintLocatorBuilder withPathElement(LocatorPathElt newElt) {
     unsigned newFlags = summaryFlags | newElt.getNewSummaryFlags();
     if (!element)
@@ -547,12 +548,12 @@ public:
     return ConstraintLocatorBuilder(this, newElt, newFlags);
   }
 
-  /// \brief Determine whether this builder has an empty path.
+  /// Determine whether this builder has an empty path.
   bool hasEmptyPath() const {
     return !element;
   }
 
-  /// \brief Return the set of flags that summarize this path.
+  /// Return the set of flags that summarize this path.
   unsigned getSummaryFlags() const {
     return summaryFlags;
   }
@@ -561,7 +562,7 @@ public:
     return (getSummaryFlags() & ConstraintLocator::IsFunctionConversion);
   }
 
-  /// \brief Retrieve the base constraint locator, on which this builder's
+  /// Retrieve the base constraint locator, on which this builder's
   /// path is based.
   ConstraintLocator *getBaseLocator() const {
     for (auto prev = this;
@@ -574,7 +575,18 @@ public:
     return nullptr;
   }
 
-  /// \brief Retrieve the components of the complete locator, which includes
+  /// Get anchor expression associated with this locator builder.
+  Expr *getAnchor() const {
+    for (auto prev = this; prev;
+         prev = prev->previous.dyn_cast<ConstraintLocatorBuilder *>()) {
+      if (auto *locator = prev->previous.dyn_cast<ConstraintLocator *>())
+        return locator->getAnchor();
+    }
+
+    return nullptr;
+  }
+
+  /// Retrieve the components of the complete locator, which includes
   /// the anchor expression and the path.
   Expr *getLocatorParts(SmallVectorImpl<LocatorPathElt> &path) const {
     for (auto prev = this;

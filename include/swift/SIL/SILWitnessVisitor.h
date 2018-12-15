@@ -21,11 +21,10 @@
 
 #include "swift/AST/ASTVisitor.h"
 #include "swift/AST/Decl.h"
+#include "swift/AST/ProtocolAssociations.h"
 #include "swift/AST/Types.h"
 #include "swift/SIL/TypeLowering.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/raw_ostream.h"
 
 namespace swift {
 
@@ -49,23 +48,10 @@ template <class T> class SILWitnessVisitor : public ASTVisitor<T> {
 
 public:
   void visitProtocolDecl(ProtocolDecl *protocol) {
-    // Associated types get added after the inherited conformances, but
-    // before all the function requirements.
-    bool haveAddedAssociatedTypes = false;
-    auto addAssociatedTypes = [&] {
-      if (haveAddedAssociatedTypes) return;
-      haveAddedAssociatedTypes = true;
+    // The protocol conformance descriptor gets added first.
+    asDerived().addProtocolConformanceDescriptor();
 
-      for (Decl *member : protocol->getMembers()) {
-        if (auto associatedType = dyn_cast<AssociatedTypeDecl>(member)) {
-          // TODO: only add associated types when they're new?
-          asDerived().addAssociatedType(associatedType);
-        }
-      }
-    };
-
-    for (auto &reqt : protocol->getRequirementSignature()
-                              ->getCanonicalSignature()->getRequirements()) {
+    for (const auto &reqt : protocol->getRequirementSignature()) {
       switch (reqt.getKind()) {
       // These requirements don't show up in the witness table.
       case RequirementKind::Superclass:
@@ -74,10 +60,11 @@ public:
         continue;
 
       case RequirementKind::Conformance: {
-        auto type = CanType(reqt.getFirstType());
+        auto type = reqt.getFirstType()->getCanonicalType();
         assert(type->isTypeParameter());
         auto requirement =
-          cast<ProtocolType>(CanType(reqt.getSecondType()))->getDecl();
+          cast<ProtocolType>(reqt.getSecondType()->getCanonicalType())
+            ->getDecl();
 
         // ObjC protocols do not have witnesses.
         if (!Lowering::TypeConverter::protocolRequiresWitnessTable(requirement))
@@ -88,59 +75,71 @@ public:
         // come before any protocol requirements on associated types.
         if (auto parameter = dyn_cast<GenericTypeParamType>(type)) {
           assert(type->isEqual(protocol->getSelfInterfaceType()));
-          assert(!haveAddedAssociatedTypes &&
-                 "unexpected ordering of conformances");
           assert(parameter->getDepth() == 0 && parameter->getIndex() == 0 &&
                  "non-self type parameter in protocol");
           asDerived().addOutOfLineBaseProtocol(requirement);
           continue;
         }
 
-        // Add the associated types if we haven't yet.
-        addAssociatedTypes();
-
         // Otherwise, add an associated requirement.
-        asDerived().addAssociatedConformance(type, requirement);
+        AssociatedConformance assocConf(protocol, type, requirement);
+        asDerived().addAssociatedConformance(assocConf);
         continue;
       }
       }
       llvm_unreachable("bad requirement kind");
     }
 
-    // Add the associated types if we haven't yet.
-    addAssociatedTypes();
+    // Add the associated types.
+    for (Decl *member : protocol->getMembers()) {
+      if (auto associatedType = dyn_cast<AssociatedTypeDecl>(member)) {
+        // If this is a new associated type (which does not override an
+        // existing associated type), add it.
+        if (associatedType->getOverriddenDecls().empty())
+          asDerived().addAssociatedType(AssociatedType(associatedType));
+      }
+    }
+
+    if (asDerived().shouldVisitRequirementSignatureOnly())
+      return;
 
     // Visit the witnesses for the direct members of a protocol.
-    for (Decl *member : protocol->getMembers())
+    for (Decl *member : protocol->getMembers()) {
       ASTVisitor<T>::visit(member);
+    }
+  }
+
+  /// If true, only the base protocols and associated types will be visited.
+  /// The base implementation returns false.
+  bool shouldVisitRequirementSignatureOnly() const {
+    return false;
   }
 
   /// Fallback for unexpected protocol requirements.
   void visitDecl(Decl *d) {
-#ifndef NDEBUG
-    d->print(llvm::errs());
-#endif
     llvm_unreachable("unhandled protocol requirement");
   }
 
   void visitAbstractStorageDecl(AbstractStorageDecl *sd) {
-    asDerived().addMethod(sd->getGetter());
-    if (sd->isSettable(sd->getDeclContext())) {
-      asDerived().addMethod(sd->getSetter());
-      if (sd->getMaterializeForSetFunc())
-        asDerived().addMethod(sd->getMaterializeForSetFunc());
-    }
+    sd->visitOpaqueAccessors([&](AccessorDecl *accessor) {
+      if (SILDeclRef::requiresNewWitnessTableEntry(accessor))
+        asDerived().addMethod(SILDeclRef(accessor, SILDeclRef::Kind::Func));
+    });
   }
 
   void visitConstructorDecl(ConstructorDecl *cd) {
-    asDerived().addConstructor(cd);
+    if (SILDeclRef::requiresNewWitnessTableEntry(cd))
+      asDerived().addMethod(SILDeclRef(cd, SILDeclRef::Kind::Allocator));
+  }
+
+  void visitAccessorDecl(AccessorDecl *func) {
+    // Accessors are emitted by visitAbstractStorageDecl, above.
   }
 
   void visitFuncDecl(FuncDecl *func) {
-    // Accessors are emitted by their var/subscript declaration.
-    if (func->isAccessor())
-      return;
-    asDerived().addMethod(func);
+    assert(!isa<AccessorDecl>(func));
+    if (SILDeclRef::requiresNewWitnessTableEntry(func))
+      asDerived().addMethod(SILDeclRef(func, SILDeclRef::Kind::Func));
   }
 
   void visitMissingMemberDecl(MissingMemberDecl *placeholder) {
@@ -162,6 +161,10 @@ public:
   void visitIfConfigDecl(IfConfigDecl *icd) {
     // We only care about the active members, which were already subsumed by the
     // enclosing type.
+  }
+
+  void visitPoundDiagnosticDecl(PoundDiagnosticDecl *pdd) {
+    // We don't care about diagnostics at this stage.
   }
 };
 

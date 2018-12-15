@@ -63,10 +63,6 @@ namespace {
   };
 } // end anonymous namespace
 
-llvm::SMLoc DiagnosticConsumer::getRawLoc(SourceLoc loc) {
-  return loc.Value;
-}
-
 void PrintingDiagnosticConsumer::handleDiagnostic(
     SourceManager &SM, SourceLoc Loc, DiagnosticKind Kind,
     StringRef FormatString, ArrayRef<DiagnosticArgument> FormatArgs,
@@ -80,9 +76,13 @@ void PrintingDiagnosticConsumer::handleDiagnostic(
     case DiagnosticKind::Warning: 
       SMKind = llvm::SourceMgr::DK_Warning; 
       break;
-      
-    case DiagnosticKind::Note: 
-      SMKind = llvm::SourceMgr::DK_Note; 
+
+    case DiagnosticKind::Note:
+      SMKind = llvm::SourceMgr::DK_Note;
+      break;
+
+    case DiagnosticKind::Remark:
+      SMKind = llvm::SourceMgr::DK_Remark;
       break;
   }
 
@@ -130,7 +130,7 @@ SourceManager::GetMessage(SourceLoc Loc, llvm::SourceMgr::DiagKind Kind,
   std::string LineStr;
 
   if (Loc.isValid()) {
-    BufferID = getBufferIdentifierForLoc(Loc);
+    BufferID = getDisplayNameForLoc(Loc);
     auto CurMB = LLVMSourceMgr.getMemoryBuffer(findBufferContainingLoc(Loc));
 
     // Scan backward to find the start of the line.

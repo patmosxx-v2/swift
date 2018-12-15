@@ -17,11 +17,13 @@
 
 #define DEBUG_TYPE "sil-generic-specializer"
 
+#include "swift/SIL/OptimizationRemark.h"
 #include "swift/SIL/SILFunction.h"
 #include "swift/SIL/SILInstruction.h"
 #include "swift/SILOptimizer/Utils/Generics.h"
 #include "swift/SILOptimizer/Utils/Local.h"
 #include "swift/SILOptimizer/PassManager/Transforms.h"
+#include "swift/SILOptimizer/Utils/SILOptFunctionBuilder.h"
 #include "llvm/ADT/SmallVector.h"
 
 using namespace swift;
@@ -35,8 +37,8 @@ class GenericSpecializer : public SILFunctionTransform {
   /// The entry point to the transformation.
   void run() override {
     SILFunction &F = *getFunction();
-    DEBUG(llvm::dbgs() << "***** GenericSpecializer on function:" << F.getName()
-                       << " *****\n");
+    LLVM_DEBUG(llvm::dbgs() << "***** GenericSpecializer on function:"
+                            << F.getName() << " *****\n");
 
     if (specializeAppliesInFunction(F))
       invalidateAnalysis(SILAnalysis::InvalidationKind::Everything);
@@ -47,8 +49,10 @@ class GenericSpecializer : public SILFunctionTransform {
 } // end anonymous namespace
 
 bool GenericSpecializer::specializeAppliesInFunction(SILFunction &F) {
+  SILOptFunctionBuilder FunctionBuilder(*this);
   DeadInstructionSet DeadApplies;
   llvm::SmallSetVector<SILInstruction *, 8> Applies;
+  OptRemark::Emitter ORE(DEBUG_TYPE, F.getModule());
 
   bool Changed = false;
   for (auto &BB : F) {
@@ -67,8 +71,17 @@ bool GenericSpecializer::specializeAppliesInFunction(SILFunction &F) {
         continue;
 
       auto *Callee = Apply.getReferencedFunction();
-      if (!Callee || !Callee->isDefinition())
+      if (!Callee)
         continue;
+      if (!Callee->isDefinition()) {
+        ORE.emit([&]() {
+          using namespace OptRemark;
+          return RemarkMissed("NoDef", *I)
+                 << "Unable to specialize generic function "
+                 << NV("Callee", Callee) << " since definition is not visible";
+        });
+        continue;
+      }
 
       Applies.insert(Apply.getInstruction());
     }
@@ -84,10 +97,14 @@ bool GenericSpecializer::specializeAppliesInFunction(SILFunction &F) {
       SILFunction *Callee = Apply.getReferencedFunction();
       assert(Callee && "Expected to have a known callee");
 
+      if (!Apply.canOptimize() || !Callee->shouldOptimize())
+        continue;
+
       // We have a call that can potentially be specialized, so
       // attempt to do so.
       llvm::SmallVector<SILFunction *, 2> NewFunctions;
-      trySpecializeApplyOfGeneric(Apply, DeadApplies, NewFunctions);
+      trySpecializeApplyOfGeneric(FunctionBuilder, Apply, DeadApplies,
+                                  NewFunctions, ORE);
 
       // Remove all the now-dead applies. We must do this immediately
       // rather than defer it in order to avoid problems with cloning
@@ -107,7 +124,7 @@ bool GenericSpecializer::specializeAppliesInFunction(SILFunction &F) {
       // (as opposed to returning a previous specialization), we need to notify
       // the pass manager so that the new functions get optimized.
       for (SILFunction *NewF : reverse(NewFunctions)) {
-        notifyAddFunction(NewF, Callee);
+        addFunctionToPassManagerWorklist(NewF, Callee);
       }
     }
   }

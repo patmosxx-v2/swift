@@ -24,7 +24,7 @@
 namespace swift {
 class CaptureInfo;
 
-/// \brief A universal function reference -- can wrap all AST nodes that
+/// A universal function reference -- can wrap all AST nodes that
 /// represent functions and exposes a common interface to them.
 class AnyFunctionRef {
   PointerUnion<AbstractFunctionDecl *, AbstractClosureExpr *> TheFunction;
@@ -62,12 +62,6 @@ public:
     getCaptureInfo().getLocalCaptures(Result);
   }
 
-  ArrayRef<ParameterList *> getParameterLists() const {
-    if (auto *AFD = TheFunction.dyn_cast<AbstractFunctionDecl *>())
-      return AFD->getParameterLists();
-    return TheFunction.get<AbstractClosureExpr *>()->getParameterLists();
-  }
-  
   bool hasType() const {
     if (auto *AFD = TheFunction.dyn_cast<AbstractFunctionDecl *>())
       return AFD->hasInterfaceType();
@@ -87,6 +81,16 @@ public:
       return TupleType::getEmpty(AFD->getASTContext());
     }
     return TheFunction.get<AbstractClosureExpr *>()->getResultType();
+  }
+
+  ArrayRef<AnyFunctionType::Yield>
+  getYieldResults(SmallVectorImpl<AnyFunctionType::Yield> &buffer) const {
+    return getYieldResultsImpl(buffer, /*mapIntoContext*/ false);
+  }
+
+  ArrayRef<AnyFunctionType::Yield>
+  getBodyYieldResults(SmallVectorImpl<AnyFunctionType::Yield> &buffer) const {
+    return getYieldResultsImpl(buffer, /*mapIntoContext*/ true);
   }
 
   BraceStmt *getBody() const {
@@ -116,18 +120,9 @@ public:
   /// known not to escape from that function.  In this case, captures can be
   /// more efficient.
   bool isKnownNoEscape() const {
-    if (auto afd = TheFunction.dyn_cast<AbstractFunctionDecl *>()) {
-      // As a hack, assume defer bodies are noescape.
-      if (auto fd = dyn_cast<FuncDecl>(afd))
-        return fd->isDeferBody();
-      return false;
-    }
-
-
-    auto *CE = TheFunction.get<AbstractClosureExpr *>();
-    if (!CE->getType() || CE->getType()->hasError())
-      return false;
-    return CE->getType()->castTo<FunctionType>()->isNoEscape();
+    if (hasType() && !getType()->hasError())
+      return getType()->castTo<AnyFunctionType>()->isNoEscape();
+    return false;
   }
 
   bool isObjC() const {
@@ -185,6 +180,29 @@ public:
       return ce->getGenericSignatureOfContext();
     }
     llvm_unreachable("unexpected AnyFunctionRef representation");
+  }
+
+private:
+  ArrayRef<AnyFunctionType::Yield>
+  getYieldResultsImpl(SmallVectorImpl<AnyFunctionType::Yield> &buffer,
+                      bool mapIntoContext) const {
+    assert(buffer.empty());
+    if (auto *AFD = TheFunction.dyn_cast<AbstractFunctionDecl *>()) {
+      if (auto *AD = dyn_cast<AccessorDecl>(AFD)) {
+        if (AD->isCoroutine()) {
+          auto valueTy = AD->getStorage()->getValueInterfaceType()
+                                         ->getReferenceStorageReferent();
+          if (mapIntoContext)
+            valueTy = AD->mapTypeIntoContext(valueTy);
+          YieldTypeFlags flags(AD->getAccessorKind() == AccessorKind::Modify
+                                 ? ValueOwnership::InOut
+                                 : ValueOwnership::Shared);
+          buffer.push_back(AnyFunctionType::Yield(valueTy, flags));
+          return buffer;
+        }
+      }
+    }
+    return {};
   }
 };
 #if SWIFT_COMPILER_IS_MSVC

@@ -44,35 +44,37 @@
 #include "IRGenDebugInfo.h"
 #include "IRGenFunction.h"
 #include "IRGenModule.h"
+#include "MetadataRequest.h"
+#include "Outlining.h"
 #include "ProtocolInfo.h"
 #include "ResilientTypeInfo.h"
 #include "TypeInfo.h"
-#include "WeakTypeInfo.h"
 
 using namespace swift;
 using namespace irgen;
 
-llvm::Value *irgen::emitArchetypeTypeMetadataRef(IRGenFunction &IGF,
-                                                 CanArchetypeType archetype) {
+MetadataResponse
+irgen::emitArchetypeTypeMetadataRef(IRGenFunction &IGF,
+                                    CanArchetypeType archetype,
+                                    DynamicMetadataRequest request) {
   // Check for an existing cache entry.
-  auto localDataKind = LocalTypeDataKind::forTypeMetadata();
-  auto metadata = IGF.tryGetLocalTypeData(archetype, localDataKind);
+  if (auto response = IGF.tryGetLocalTypeMetadata(archetype, request))
+    return response;
 
   // If that's not present, this must be an associated type.
-  if (!metadata) {
-    assert(!archetype->isPrimary() &&
-           "type metadata for primary archetype was not bound in context");
+  auto nested = cast<NestedArchetypeType>(archetype);
 
-    CanArchetypeType parent(archetype->getParent());
-    metadata = emitAssociatedTypeMetadataRef(IGF, parent,
-                                             archetype->getAssocType());
+  CanArchetypeType parent(nested->getParent());
+  AssociatedType association(nested->getAssocType());
 
-    setTypeMetadataName(IGF.IGM, metadata, archetype);
+  MetadataResponse response =
+    emitAssociatedTypeMetadataRef(IGF, parent, association, request);
 
-    IGF.setScopedLocalTypeData(archetype, localDataKind, metadata);
-  }
+  setTypeMetadataName(IGF.IGM, response.getMetadata(), archetype);
 
-  return metadata;
+  IGF.setScopedLocalTypeMetadata(archetype, response);
+
+  return response;
 }
 
 namespace {
@@ -85,11 +87,18 @@ namespace {
 class OpaqueArchetypeTypeInfo
   : public ResilientTypeInfo<OpaqueArchetypeTypeInfo>
 {
-  OpaqueArchetypeTypeInfo(llvm::Type *type) : ResilientTypeInfo(type) {}
+  OpaqueArchetypeTypeInfo(llvm::Type *type)
+    : ResilientTypeInfo(type, IsABIAccessible) {}
 
 public:
   static const OpaqueArchetypeTypeInfo *create(llvm::Type *type) {
     return new OpaqueArchetypeTypeInfo(type);
+  }
+
+  void collectMetadataForOutlining(OutliningMetadataCollector &collector,
+                                   SILType T) const override {
+    // We'll need formal type metadata for this archetype.
+    collector.collectTypeMetadataForLayout(T);
   }
 };
 
@@ -163,30 +172,14 @@ llvm::Value *irgen::emitArchetypeWitnessTableRef(IRGenFunction &IGF,
   auto wtable = IGF.tryGetLocalTypeData(archetype, localDataKind);
   if (wtable) return wtable;
 
-  // It can happen with class constraints that Sema will consider a
-  // constraint to be abstract, but the minimized signature will
-  // eliminate it as concrete.  Handle this by performing a concrete
-  // lookup.
-  // TODO: maybe Sema shouldn't ever do this?
-  if (Type classBound = archetype->getSuperclass()) {
-    auto conformance =
-      IGF.IGM.getSwiftModule()->lookupConformance(classBound, protocol,
-                                                  nullptr);
-    if (conformance && conformance->isConcrete()) {
-      return emitWitnessTableRef(IGF, archetype, *conformance);
-    }
-  }
-
   // If we don't have an environment, this must be an implied witness table
   // reference.
   // FIXME: eliminate this path when opened types have generic environments.
-  auto environment = archetype->getGenericEnvironment();
-  if (!environment) {
-    assert(archetype->isOpenedExistential() &&
-           "non-opened archetype lacking generic environment?");
+  if (auto opened = dyn_cast<OpenedArchetypeType>(archetype)) {
     SmallVector<ProtocolEntry, 4> entries;
     for (auto p : archetype->getConformsTo()) {
-      const ProtocolInfo &impl = IGF.IGM.getProtocolInfo(p);
+      const ProtocolInfo &impl =
+          IGF.IGM.getProtocolInfo(p, ProtocolInfoKind::RequirementSignature);
       entries.push_back(ProtocolEntry(p, impl));
     }
 
@@ -201,6 +194,8 @@ llvm::Value *irgen::emitArchetypeWitnessTableRef(IRGenFunction &IGF,
       return wtable;
     });
   }
+  
+  auto environment = archetype->getPrimary()->getGenericEnvironment();
 
   // Otherwise, ask the generic signature for the environment for the best
   // path to the conformance.
@@ -209,10 +204,10 @@ llvm::Value *irgen::emitArchetypeWitnessTableRef(IRGenFunction &IGF,
   // to this conformance from concrete sources.
 
   auto signature = environment->getGenericSignature()->getCanonicalSignature();
-  auto archetypeDepType = environment->mapTypeOutOfContext(archetype);
+  auto archetypeDepType = archetype->getInterfaceType();
 
-  auto astPath = signature->getConformanceAccessPath(archetypeDepType, protocol,
-                                                     *IGF.IGM.getSwiftModule());
+  auto astPath = signature->getConformanceAccessPath(archetypeDepType,
+                                                     protocol);
 
   auto i = astPath.begin(), e = astPath.end();
   assert(i != e && "empty path!");
@@ -231,7 +226,9 @@ llvm::Value *irgen::emitArchetypeWitnessTableRef(IRGenFunction &IGF,
     CanType depType = CanType(entry.first);
     ProtocolDecl *requirement = entry.second;
 
-    auto &lastPI = IGF.IGM.getProtocolInfo(lastProtocol);
+    const ProtocolInfo &lastPI =
+        IGF.IGM.getProtocolInfo(lastProtocol,
+                                ProtocolInfoKind::RequirementSignature);
 
     // If it's a type parameter, it's self, and this is a base protocol
     // requirement.
@@ -242,8 +239,8 @@ llvm::Value *irgen::emitArchetypeWitnessTableRef(IRGenFunction &IGF,
 
     // Otherwise, it's an associated conformance requirement.
     } else {
-      WitnessIndex index =
-        lastPI.getAssociatedConformanceIndex(depType, requirement);
+      AssociatedConformance association(lastProtocol, depType, requirement);
+      WitnessIndex index = lastPI.getAssociatedConformanceIndex(association);
       path.addAssociatedConformanceComponent(index);
     }
 
@@ -251,27 +248,35 @@ llvm::Value *irgen::emitArchetypeWitnessTableRef(IRGenFunction &IGF,
   }
   assert(lastProtocol == protocol);
 
-  auto rootWTable = IGF.getLocalTypeData(rootArchetype,
+  auto rootWTable = IGF.tryGetLocalTypeData(rootArchetype,
               LocalTypeDataKind::forAbstractProtocolWitnessTable(rootProtocol));
+  assert(rootWTable && "root witness table not bound in local context!");
 
   wtable = path.followFromWitnessTable(IGF, rootArchetype,
                                        ProtocolConformanceRef(rootProtocol),
-                                       rootWTable, nullptr);
+                                       MetadataResponse::forComplete(rootWTable),
+                                       /*request*/ MetadataState::Complete,
+                                       nullptr).getMetadata();
 
   return wtable;
 }
 
-llvm::Value *irgen::emitAssociatedTypeMetadataRef(IRGenFunction &IGF,
-                                                  CanArchetypeType origin,
-                                               AssociatedTypeDecl *associate) {
+MetadataResponse
+irgen::emitAssociatedTypeMetadataRef(IRGenFunction &IGF,
+                                     CanArchetypeType origin,
+                                     AssociatedType association,
+                                     DynamicMetadataRequest request) {
   // Find the conformance of the origin to the associated type's protocol.
   llvm::Value *wtable = emitArchetypeWitnessTableRef(IGF, origin,
-                                                     associate->getProtocol());
+                                               association.getSourceProtocol());
 
   // Find the origin's type metadata.
-  llvm::Value *originMetadata = emitArchetypeTypeMetadataRef(IGF, origin);
+  llvm::Value *originMetadata =
+    emitArchetypeTypeMetadataRef(IGF, origin, MetadataState::Abstract)
+      .getMetadata();
 
-  return emitAssociatedTypeMetadataRef(IGF, originMetadata, wtable, associate);
+  return emitAssociatedTypeMetadataRef(IGF, originMetadata, wtable,
+                                       association, request);
 }
 
 const TypeInfo *TypeConverter::convertArchetypeType(ArchetypeType *archetype) {
@@ -283,7 +288,7 @@ const TypeInfo *TypeConverter::convertArchetypeType(ArchetypeType *archetype) {
   // representation.
   if (archetype->requiresClass() ||
       (layout && layout->isRefCounted())) {
-    auto refcount = getReferenceCountingForType(IGM, CanType(archetype));
+    auto refcount = archetype->getReferenceCounting();
 
     llvm::PointerType *reprTy;
 
@@ -318,7 +323,9 @@ const TypeInfo *TypeConverter::convertArchetypeType(ArchetypeType *archetype) {
   // representation.
   if (layout && layout->isFixedSizeTrivial()) {
     Size size(layout->getTrivialSizeInBytes());
-    Alignment align(layout->getTrivialSizeInBytes());
+    auto layoutAlignment = layout->getAlignmentInBytes();
+    assert(layoutAlignment && "layout constraint alignment should not be 0");
+    Alignment align(layoutAlignment);
     auto spareBits =
       SpareBitVector::getConstant(size.getValueInBits(), false);
     // Get an integer type of the required size.
@@ -343,11 +350,11 @@ const TypeInfo *TypeConverter::convertArchetypeType(ArchetypeType *archetype) {
 
 static void setMetadataRef(IRGenFunction &IGF,
                            ArchetypeType *archetype,
-                           llvm::Value *metadata) {
+                           llvm::Value *metadata,
+                           MetadataState metadataState) {
   assert(metadata->getType() == IGF.IGM.TypeMetadataPtrTy);
-  IGF.setUnscopedLocalTypeData(CanType(archetype),
-                               LocalTypeDataKind::forTypeMetadata(),
-                               metadata);
+  IGF.setUnscopedLocalTypeMetadata(CanType(archetype),
+                         MetadataResponse::forBounded(metadata, metadataState));
 }
 
 static void setWitnessTable(IRGenFunction &IGF,
@@ -366,10 +373,11 @@ static void setWitnessTable(IRGenFunction &IGF,
 /// witness value within this scope.
 void IRGenFunction::bindArchetype(ArchetypeType *archetype,
                                   llvm::Value *metadata,
+                                  MetadataState metadataState,
                                   ArrayRef<llvm::Value*> wtables) {
   // Set the metadata pointer.
   setTypeMetadataName(IGM, metadata, CanType(archetype));
-  setMetadataRef(*this, archetype, metadata);
+  setMetadataRef(*this, archetype, metadata, metadataState);
 
   // Set the protocol witness tables.
 
@@ -391,7 +399,9 @@ llvm::Value *irgen::emitDynamicTypeOfOpaqueArchetype(IRGenFunction &IGF,
   auto archetype = type.castTo<ArchetypeType>();
 
   // Acquire the archetype's static metadata.
-  llvm::Value *metadata = emitArchetypeTypeMetadataRef(IGF, archetype);
+  llvm::Value *metadata =
+    emitArchetypeTypeMetadataRef(IGF, archetype, MetadataState::Complete)
+      .getMetadata();
   return IGF.Builder.CreateCall(IGF.IGM.getGetDynamicTypeFn(),
                                 {addr.getAddress(), metadata,
                                  llvm::ConstantInt::get(IGF.IGM.Int1Ty, 0)});

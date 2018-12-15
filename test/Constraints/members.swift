@@ -1,4 +1,4 @@
-// RUN: %target-typecheck-verify-swift -swift-version 4
+// RUN: %target-typecheck-verify-swift -swift-version 5
 
 ////
 // Members of structs
@@ -28,7 +28,7 @@ func g0(_: (inout X) -> (Float) -> ()) {}
 _ = x.f0(i)
 x.f0(i).f1(i)
 
-g0(X.f1)
+g0(X.f1) // expected-error{{partial application of 'mutating' method}}
 
 _ = x.f0(x.f2(1))
 _ = x.f0(1).f2(i)
@@ -58,10 +58,10 @@ struct GZ<T> {
   var i : T
   func getI() -> T { return i }
 
-  func f1<U>(_ a: T, b: U) -> (T, U) { 
+  func f1<U>(_ a: T, b: U) -> (T, U) {
     return (a, b)
   }
-  
+
   func f2() {
     var f : Float
     var t = f1(i, b: f)
@@ -119,7 +119,7 @@ var wcurriedFull : () = w.curried(0)(1)
 
 // Member of enum type
 func enumMetatypeMember(_ opt: Int?) {
-  opt.none // expected-error{{enum element 'none' cannot be referenced as an instance member}}
+  opt.none // expected-error{{enum case 'none' cannot be used as an instance member}}
 }
 
 ////
@@ -315,7 +315,7 @@ struct S22490787 {
 
 func f22490787() {
   var path: S22490787 = S22490787()
-  
+
   for p in path {  // expected-error {{type 'S22490787' does not conform to protocol 'Sequence'}}
   }
 }
@@ -348,7 +348,7 @@ enum SR_2193_Error: Error {
 
 do {
   throw SR_2193_Error.Boom
-} catch let e as SR_2193_Error.Boom { // expected-error {{enum element 'Boom' is not a member type of 'SR_2193_Error'}}
+} catch let e as SR_2193_Error.Boom { // expected-error {{enum case 'Boom' is not a member type of 'SR_2193_Error'}}
 }
 
 // rdar://problem/25341015
@@ -390,3 +390,79 @@ func r25341015_inner() {
   func r25341015_local() {}
   r25341015_local(x: 1, y: 2) // expected-error {{argument passed to call that takes no arguments}}
 }
+
+// rdar://problem/32854314 - Emit shadowing diagnostics even if argument types do not much completely
+
+func foo_32854314() -> Double {
+  return 42
+}
+
+func bar_32854314() -> Int {
+  return 0
+}
+
+extension Array where Element == Int {
+  func foo() {
+    let _ = min(foo_32854314(), bar_32854314()) // expected-note {{use 'Swift.' to reference the global function in module 'Swift'}} {{13-13=Swift.}}
+    // expected-error@-1 {{use of 'min' nearly matches global function 'min' in module 'Swift' rather than instance method 'min()'}}
+  }
+
+  func foo(_ x: Int, _ y: Double) {
+    let _ = min(x, y) // expected-note {{use 'Swift.' to reference the global function in module 'Swift'}} {{13-13=Swift.}}
+    // expected-error@-1 {{use of 'min' nearly matches global function 'min' in module 'Swift' rather than instance method 'min()'}}
+  }
+
+  func bar() {
+    let _ = min(1.0, 2) // expected-note {{use 'Swift.' to reference the global function in module 'Swift'}} {{13-13=Swift.}}
+    // expected-error@-1 {{use of 'min' nearly matches global function 'min' in module 'Swift' rather than instance method 'min()'}}
+  }
+}
+
+// Crash in diagnoseImplicitSelfErrors()
+
+struct Aardvark {
+  var snout: Int
+
+  mutating func burrow() {
+    dig(&snout, .y) // expected-error {{type 'Int' has no member 'y'}}
+  }
+
+  func dig(_: inout Int, _: Int) {}
+}
+
+func rdar33914444() {
+  struct A {
+    enum R<E: Error> {
+      case e(E) // expected-note {{'e' declared here}}
+    }
+
+    struct S {
+      enum E: Error {
+        case e1
+      }
+
+      let e: R<E>
+    }
+  }
+
+  _ = A.S(e: .e1)
+  // expected-error@-1 {{type 'A.R<A.S.E>' has no member 'e1'; did you mean 'e'?}}
+}
+
+// SR-5324: Better diagnostic when instance member of outer type is referenced from nested type
+
+struct Outer {
+  var outer: Int
+
+  struct Inner {
+    var inner: Int
+
+    func sum() -> Int {
+      return inner + outer
+      // expected-error@-1 {{instance member 'outer' of type 'Outer' cannot be used on instance of nested type 'Outer.Inner'}}
+    }
+  }
+}
+
+// rdar://problem/39514009 - don't crash when trying to diagnose members with special names
+print("hello")[0] // expected-error {{value of tuple type '()' has no member 'subscript'}}

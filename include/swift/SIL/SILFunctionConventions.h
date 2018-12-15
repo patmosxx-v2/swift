@@ -9,20 +9,22 @@
 // See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
 //
 //===----------------------------------------------------------------------===//
-//
-// This file defines the SILModuleConventions and SILFunctionConventions
-// classes.  These interfaces are used to determine when SIL can represent
-// values of a given lowered type by value and when they must be represented by
-// address. This is influenced by a SILModule-wide "lowered address" convention,
-// which reflects whether the current SIL stage requires lowered addresses.
-//
-// The primary purpose of this API is mapping the formal SIL parameter and
-// result conventions onto the SIL argument types. The "formal" conventions are
-// immutably associated with a SILFunctionType--a SIL function's type
-// information never changes. The SIL conventions determine how those formal
-// conventions will be represented in the body of SIL functions and at call
-// sites.
-//
+///
+/// \file
+///
+/// This file defines the SILModuleConventions and SILFunctionConventions
+/// classes.  These interfaces are used to determine when SIL can represent
+/// values of a given lowered type by value and when they must be represented by
+/// address. This is influenced by a SILModule-wide "lowered address" convention,
+/// which reflects whether the current SIL stage requires lowered addresses.
+///
+/// The primary purpose of this API is mapping the formal SIL parameter and
+/// result conventions onto the SIL argument types. The "formal" conventions are
+/// immutably associated with a SILFunctionType--a SIL function's type
+/// information never changes. The SIL conventions determine how those formal
+/// conventions will be represented in the body of SIL functions and at call
+/// sites.
+///
 //===----------------------------------------------------------------------===//
 
 #ifndef SWIFT_SIL_FUNCTIONCONVENTIONS_H
@@ -45,9 +47,13 @@ class SILModuleConventions {
 
   static bool isIndirectSILParam(SILParameterInfo param, bool loweredAddresses);
 
+  static bool isIndirectSILYield(SILYieldInfo yield, bool loweredAddresses);
+
   static bool isIndirectSILResult(SILResultInfo result, bool loweredAddresses);
 
   static SILType getSILParamType(SILParameterInfo param, bool loweredAddresses);
+
+  static SILType getSILYieldType(SILYieldInfo yield, bool loweredAddresses);
 
   static SILType getSILResultType(SILResultInfo param, bool loweredAddresses);
 
@@ -77,12 +83,20 @@ public:
     return isIndirectSILParam(param, loweredAddresses);
   }
 
+  bool isSILIndirect(SILYieldInfo yield) const {
+    return isIndirectSILYield(yield, loweredAddresses);
+  }
+
   bool isSILIndirect(SILResultInfo result) const {
     return isIndirectSILResult(result, loweredAddresses);
   }
 
   SILType getSILType(SILParameterInfo param) const {
     return getSILParamType(param, loweredAddresses);
+  }
+
+  SILType getSILType(SILYieldInfo yield) const {
+    return getSILYieldType(yield, loweredAddresses);
   }
 
   SILType getSILType(SILResultInfo result) const {
@@ -115,12 +129,20 @@ public:
     return silConv.isSILIndirect(param);
   }
 
+  bool isSILIndirect(SILYieldInfo yield) const {
+    return silConv.isSILIndirect(yield);
+  }
+
   bool isSILIndirect(SILResultInfo result) const {
     return silConv.isSILIndirect(result);
   }
 
   SILType getSILType(SILParameterInfo param) const {
     return silConv.getSILType(param);
+  }
+
+  SILType getSILType(SILYieldInfo yield) const {
+    return silConv.getSILType(yield);
   }
 
   SILType getSILType(SILResultInfo result) const {
@@ -279,11 +301,33 @@ public:
   }
 
   //===--------------------------------------------------------------------===//
+  // SIL yield types.
+  //===--------------------------------------------------------------------===//
+
+  unsigned getNumYields() const { return funcTy->getNumYields(); }
+
+  ArrayRef<SILYieldInfo> getYields() const {
+    return funcTy->getYields();
+  }
+
+  using SILYieldTypeIter =
+      llvm::mapped_iterator<const SILYieldInfo *, SILParameterTypeFunc>;
+  using SILYieldTypeRange = IteratorRange<SILYieldTypeIter>;
+
+  SILYieldTypeRange getYieldSILTypes() const {
+    return makeIteratorRange(
+        SILYieldTypeIter(funcTy->getYields().begin(),
+                         SILParameterTypeFunc(silConv)),
+        SILYieldTypeIter(funcTy->getYields().end(),
+                         SILParameterTypeFunc(silConv)));
+  }
+
+  //===--------------------------------------------------------------------===//
   // SILArgument API, including indirect results and parameters.
   //
   // The argument indices below relate to full applies in which the caller and
   // callee indices match. Partial apply indices are shifted on the caller
-  // side. See ApplySite::getCallArgIndexOfFirstAppliedArg().
+  // side. See ApplySite::getCalleeArgIndexOfFirstAppliedArg().
   //===--------------------------------------------------------------------===//
 
   unsigned getSILArgIndexOfFirstIndirectResult() const { return 0; }
@@ -363,6 +407,11 @@ inline bool SILModuleConventions::isIndirectSILParam(SILParameterInfo param,
   llvm_unreachable("covered switch isn't covered?!");
 }
 
+inline bool SILModuleConventions::isIndirectSILYield(SILYieldInfo yield,
+                                                     bool loweredAddresses) {
+  return isIndirectSILParam(yield, loweredAddresses);
+}
+
 inline bool SILModuleConventions::isIndirectSILResult(SILResultInfo result,
                                                       bool loweredAddresses) {
   switch (result.getConvention()) {
@@ -384,6 +433,11 @@ inline SILType SILModuleConventions::getSILParamType(SILParameterInfo param,
   return SILModuleConventions::isIndirectSILParam(param, loweredAddresses)
              ? SILType::getPrimitiveAddressType(param.getType())
              : SILType::getPrimitiveObjectType(param.getType());
+}
+
+inline SILType SILModuleConventions::getSILYieldType(SILYieldInfo yield,
+                                                     bool loweredAddresses) {
+  return getSILParamType(yield, loweredAddresses);
 }
 
 inline SILType SILModuleConventions::getSILResultType(SILResultInfo result,

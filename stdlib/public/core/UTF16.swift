@@ -10,6 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 extension Unicode {
+  @_frozen
   public enum UTF16 {
   case _swift3Buffer(Unicode.UTF16.ForwardParser)
   }
@@ -17,40 +18,70 @@ extension Unicode {
 
 extension Unicode.UTF16 : Unicode.Encoding {
   public typealias CodeUnit = UInt16
-  public typealias EncodedScalar = _UIntBuffer<UInt32, UInt16>
+  public typealias EncodedScalar = _UIntBuffer<UInt16>
 
+  @inlinable
+  internal static var _replacementCodeUnit: CodeUnit {
+    @inline(__always) get { return 0xfffd }
+  }
+  
+  @inlinable
   public static var encodedReplacementCharacter : EncodedScalar {
     return EncodedScalar(_storage: 0xFFFD, _bitCount: 16)
   }
 
+  @inlinable
+  public static func _isASCII(_ x: CodeUnit) -> Bool  {
+    return x <= 0x7f
+  }
+
+  @inlinable
   public static func _isScalar(_ x: CodeUnit) -> Bool  {
     return x & 0xf800 != 0xd800
   }
 
+  @inlinable
+  @inline(__always)
+  internal static func _decodeSurrogates(
+    _ lead: CodeUnit,
+    _ trail: CodeUnit
+  ) -> Unicode.Scalar {
+    _internalInvariant(isLeadSurrogate(lead))
+    _internalInvariant(isTrailSurrogate(trail))
+    return Unicode.Scalar(
+      _unchecked: 0x10000 +
+        (UInt32(lead & 0x03ff) &<< 10 | UInt32(trail & 0x03ff)))
+  }
+
+  @inlinable
   public static func decode(_ source: EncodedScalar) -> Unicode.Scalar {
     let bits = source._storage
     if _fastPath(source._bitCount == 16) {
       return Unicode.Scalar(_unchecked: bits & 0xffff)
     }
-    _sanityCheck(source._bitCount == 32)
-    let value = 0x10000 + (bits >> 16 & 0x03ff | (bits & 0x03ff) << 10)
+    _internalInvariant(source._bitCount == 32)
+    let lower: UInt32 = bits >> 16 & 0x03ff
+    let upper: UInt32 = (bits & 0x03ff) << 10
+    let value = 0x10000 + (lower | upper)
     return Unicode.Scalar(_unchecked: value)
   }
 
+  @inlinable
   public static func encode(
     _ source: Unicode.Scalar
   ) -> EncodedScalar? {
     let x = source.value
-    if _fastPath(x < (1 << 16)) {
+    if _fastPath(x < ((1 as UInt32) << 16)) {
       return EncodedScalar(_storage: x, _bitCount: 16)
     }
-    let x1 = x - (1 << 16)
+    let x1 = x - ((1 as UInt32) << 16)
     var r = (0xdc00 + (x1 & 0x3ff))
     r &<<= 16
     r |= (0xd800 + (x1 &>> 10 & 0x3ff))
     return EncodedScalar(_storage: r, _bitCount: 32)
   }
 
+  @inlinable
   @inline(__always)
   public static func transcode<FromEncoding : Unicode.Encoding>(
     _ content: FromEncoding.EncodedScalar, from _: FromEncoding.Type
@@ -94,14 +125,18 @@ extension Unicode.UTF16 : Unicode.Encoding {
     return encode(FromEncoding.decode(content))
   }
   
+  @_fixed_layout
   public struct ForwardParser {
-    public typealias _Buffer = _UIntBuffer<UInt32, UInt16>
+    public typealias _Buffer = _UIntBuffer<UInt16>
+    @inlinable
     public init() { _buffer = _Buffer() }
     public var _buffer: _Buffer
   }
   
+  @_fixed_layout
   public struct ReverseParser {
-    public typealias _Buffer = _UIntBuffer<UInt32, UInt16>
+    public typealias _Buffer = _UIntBuffer<UInt16>
+    @inlinable
     public init() { _buffer = _Buffer() }
     public var _buffer: _Buffer
   }
@@ -110,15 +145,17 @@ extension Unicode.UTF16 : Unicode.Encoding {
 extension UTF16.ReverseParser : Unicode.Parser, _UTFParser {
   public typealias Encoding = Unicode.UTF16
 
+  @inlinable
   public func _parseMultipleCodeUnits() -> (isValid: Bool, bitCount: UInt8) {
-    _sanityCheck(  // this case handled elsewhere
-      !Encoding._isScalar(UInt16(extendingOrTruncating: _buffer._storage)))
+    _internalInvariant(  // this case handled elsewhere
+      !Encoding._isScalar(UInt16(truncatingIfNeeded: _buffer._storage)))
     if _fastPath(_buffer._storage & 0xFC00_FC00 == 0xD800_DC00) {
       return (true, 2*16)
     }
     return (false, 1*16)
   }
   
+  @inlinable
   public func _bufferedScalar(bitCount: UInt8) -> Encoding.EncodedScalar {
     return Encoding.EncodedScalar(
       _storage:
@@ -131,15 +168,17 @@ extension UTF16.ReverseParser : Unicode.Parser, _UTFParser {
 extension Unicode.UTF16.ForwardParser : Unicode.Parser, _UTFParser {
   public typealias Encoding = Unicode.UTF16
   
+  @inlinable
   public func _parseMultipleCodeUnits() -> (isValid: Bool, bitCount: UInt8) {
-    _sanityCheck(  // this case handled elsewhere
-      !Encoding._isScalar(UInt16(extendingOrTruncating: _buffer._storage)))
+    _internalInvariant(  // this case handled elsewhere
+      !Encoding._isScalar(UInt16(truncatingIfNeeded: _buffer._storage)))
     if _fastPath(_buffer._storage & 0xFC00_FC00 == 0xDC00_D800) {
       return (true, 2*16)
     }
     return (false, 1*16)
   }
   
+  @inlinable
   public func _bufferedScalar(bitCount: UInt8) -> Encoding.EncodedScalar {
     var r = _buffer
     r._bitCount = bitCount

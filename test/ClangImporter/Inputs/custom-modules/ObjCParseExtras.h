@@ -154,6 +154,19 @@ __weak id globalWeakVar;
 - (instancetype)initWithInt:(NSInteger)value __attribute__((objc_designated_initializer));
 @end
 
+@interface DesignatedInitWithClassExtension : DesignatedInitRoot
+- (instancetype)initWithInt:(NSInteger)value __attribute__((objc_designated_initializer));
+- (instancetype)initWithConvenienceInt:(NSInteger)value;
+@end
+@interface DesignatedInitWithClassExtension ()
+- (instancetype)initWithFloat:(float)value __attribute__((objc_designated_initializer));
+@end
+
+@interface DesignatedInitWithClassExtensionInAnotherModule : DesignatedInitRoot
+- (instancetype)initWithInt:(NSInteger)value __attribute__((objc_designated_initializer));
+- (instancetype)initWithConvenienceInt:(NSInteger)value;
+@end
+
 
 @protocol ExplicitSetterProto
 @property (readonly) id foo;
@@ -187,7 +200,44 @@ typedef SomeCell <NSCopying> *CopyableSomeCell;
 + (BOOL)processValueAndReturnError:(NSError **)error;
 @end
 
+@interface CallbackBase : NSObject
+- (void)performWithHandler:(void(^ _Nonnull)(void))handler;
+- (void)performWithOptHandler:(void(^ _Nullable)(void))handler;
+- (void)performWithNonescapingHandler:(void(__attribute__((noescape)) ^ _Nonnull)(void))handler;
+- (void)performWithOptNonescapingHandler:(void(__attribute__((noescape)) ^ _Nullable)(void))handler;
+@end
+
 @interface SelectorSplittingAccessors : NSObject
 // Note the custom setter name here; this is important.
 @property (setter=takeFooForBar:) BOOL fooForBar;
 @end
+
+@interface InstancetypeAccessor : NSObject
+@property (class, readonly) InstancetypeAccessor *prop;
++ (instancetype)prop;
+@end
+
+typedef NSArray<NSString *> *NSStringArray;
+
+@interface BridgedTypedefs : NSObject
+@property (readonly,nonnull) NSArray<NSStringArray> *arrayOfArrayOfStrings;
+@end
+
+typedef NSString * _Nonnull (*FPTypedef)(NSString * _Nonnull);
+extern FPTypedef _Nonnull getFP(void);
+
+
+#if !__has_feature(objc_arc_fields)
+# error "Your Clang is not new enough"
+#endif
+struct NonTrivialToCopy {
+  __strong id field;
+};
+
+struct NonTrivialToCopyWrapper {
+  struct NonTrivialToCopy inner;
+};
+
+struct TrivialToCopy {
+  __unsafe_unretained id field;
+};

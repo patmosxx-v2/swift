@@ -18,6 +18,9 @@
 #ifndef SWIFT_SIL_DYNAMICCASTS_H
 #define SWIFT_SIL_DYNAMICCASTS_H
 
+#include "swift/Basic/ProfileCounter.h"
+#include "swift/SIL/SILValue.h"
+
 namespace swift {
 
 class CanType;
@@ -65,7 +68,6 @@ SILValue emitSuccessfulScalarUnconditionalCast(
 
 bool emitSuccessfulIndirectUnconditionalCast(
     SILBuilder &B, ModuleDecl *M, SILLocation loc,
-    CastConsumptionKind consumption,
     SILValue src, CanType sourceType,
     SILValue dest, CanType targetType,
     SILInstruction *existingCast = nullptr);
@@ -79,19 +81,19 @@ bool canUseScalarCheckedCastInstructions(SILModule &M,
 /// using a scalar cast operation.
 void emitIndirectConditionalCastWithScalar(
     SILBuilder &B, ModuleDecl *M, SILLocation loc,
-    CastConsumptionKind consumption,
-    SILValue src, CanType sourceType,
-    SILValue dest, CanType targetType,
-    SILBasicBlock *trueBB, SILBasicBlock *falseBB);
+    CastConsumptionKind consumption, SILValue src, CanType sourceType,
+    SILValue dest, CanType targetType, SILBasicBlock *trueBB,
+    SILBasicBlock *falseBB, ProfileCounter TrueCount = ProfileCounter(),
+    ProfileCounter FalseCount = ProfileCounter());
 
-/// \brief Does the type conform to the _ObjectiveCBridgeable protocol.
+/// Does the type conform to the _ObjectiveCBridgeable protocol.
 bool isObjectiveCBridgeable(ModuleDecl *M, CanType Ty);
 
-/// \brief Get the bridged NS class of a CF class if it exists. Returns
+/// Get the bridged NS class of a CF class if it exists. Returns
 /// an empty CanType if such class does not exist.
 CanType getNSBridgedClassOfCFClass(ModuleDecl *M, CanType type);
 
-/// \brief Does the type conform to Error.
+/// Does the type conform to Error.
 bool isError(ModuleDecl *M, CanType Ty);
 } // end namespace swift
 

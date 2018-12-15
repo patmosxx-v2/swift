@@ -58,7 +58,7 @@ bb0(%0 : $*Builtin.NativeObject, %1 : $Builtin.NativeObject):
 // CHECK: release
 // CHECK: ret void
 sil @assign_store : $@convention(thin) (@in Builtin.NativeObject, Builtin.NativeObject) -> () {
-bb0(%0 : $*Builtin.NativeObject, %1 : $Builtin.NativeObject):
+bb0(%0 : $*Builtin.NativeObject, %1 : @unowned $Builtin.NativeObject):
   store %1 to [assign] %0 : $*Builtin.NativeObject
   %2 = tuple()
   return %2 : $()

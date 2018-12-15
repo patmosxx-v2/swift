@@ -44,13 +44,13 @@ func useDict<K,V>(_ d: Dict<K,V>) {}
 
 useIntList([1,2,3])
 useIntList([1.0,2,3]) // expected-error{{cannot convert value of type 'Double' to expected element type 'Int'}}
-useIntList([nil])  // expected-error {{nil is not compatible with expected element type 'Int'}}
+useIntList([nil])  // expected-error {{'nil' is not compatible with expected element type 'Int'}}
 
 useDoubleList([1.0,2,3])
 useDoubleList([1.0,2.0,3.0])
 
 useIntDict(["Niners" => 31, "Ravens" => 34])
-useIntDict(["Niners" => 31, "Ravens" => 34.0]) // expected-error{{cannot convert value of type 'Double' to expected argument type 'Int'}}
+useIntDict(["Niners" => 31, "Ravens" => 34.0]) // expected-error{{cannot convert value of type '(String, Double)' to expected element type '(String, Int)'}}
 // <rdar://problem/22333090> QoI: Propagate contextual information in a call to operands
 useDoubleDict(["Niners" => 31, "Ravens" => 34.0])
 useDoubleDict(["Niners" => 31.0, "Ravens" => 34])
@@ -105,7 +105,7 @@ func longArray() {
 [1,2].map // expected-error {{expression type '((Int) throws -> _) throws -> [_]' is ambiguous without more context}}
 
 
-// <rdar://problem/25563498> Type checker crash assigning array literal to type conforming to _ArrayProtocol
+// <rdar://problem/25563498> Type checker crash assigning array literal to type conforming to ArrayProtocol
 func rdar25563498<T : ExpressibleByArrayLiteral>(t: T) {
   var x: T = [1] // expected-error {{cannot convert value of type '[Int]' to specified type 'T'}}
   // expected-warning@-1{{variable 'x' was never used; consider replacing with '_' or removing it}}
@@ -129,7 +129,7 @@ func defaultToAny(i: Int, s: String) {
 
   let a2: Array = [1, "a", 3.5]
   // expected-error@-1{{heterogeneous collection literal could only be inferred to '[Any]'; add explicit type annotation if this is intentional}}
-  let _: Int = a2  // expected-error{{value of type 'Array<Any>'}}
+  let _: Int = a2  // expected-error{{value of type '[Any]'}}
   
   let a3 = [1, "a", nil, 3.5]
   // expected-error@-1{{heterogeneous collection literal could only be inferred to '[Any?]'; add explicit type annotation if this is intentional}}
@@ -137,7 +137,7 @@ func defaultToAny(i: Int, s: String) {
   
   let a4: Array = [1, "a", nil, 3.5]
   // expected-error@-1{{heterogeneous collection literal could only be inferred to '[Any?]'; add explicit type annotation if this is intentional}}
-  let _: Int = a4 // expected-error{{value of type 'Array<Any?>'}}
+  let _: Int = a4 // expected-error{{value of type '[Any?]'}}
 
   let a5 = []
   // expected-error@-1{{empty collection literal requires an explicit type}}
@@ -153,6 +153,15 @@ func defaultToAny(i: Int, s: String) {
 
   let a6 = [B(), C()]
   let _: Int = a6 // expected-error{{value of type '[A]'}}
+}
+
+func noInferAny(iob: inout B, ioc: inout C) {
+  var b = B()
+  var c = C()
+  let _ = [b, c, iob, ioc] // do not infer [Any] when elements are lvalues or inout
+  let _: [A] = [b, c, iob, ioc] // do not infer [Any] when elements are lvalues or inout
+  b = B()
+  c = C()
 }
 
 /// Check handling of 'nil'.
@@ -267,7 +276,7 @@ class Employee: Person { }
 
 class Manager: Person { }
 
-let router = Company(
+let routerPeople = Company(
   routes: [
     { () -> Employee.Type in
       _ = ()
@@ -293,10 +302,8 @@ protocol Pear : Fruit {}
 
 struct Beef : Pear {}
 
-let router = Company(
+let routerFruit = Company(
   routes: [
-    // FIXME: implement join() for existentials
-    // expected-error@+1 {{cannot convert value of type '() -> Tomato.Type' to expected element type '() -> _'}}
     { () -> Tomato.Type in
       _ = ()
       return Chicken.self
@@ -315,3 +322,37 @@ let router = Company(
 //        accident.
 let SR3786a: [Int] = [1, 2, 3]
 let SR3786aa = [SR3786a.reversed(), SR3786a]
+
+// Conditional conformance
+protocol P { }
+
+struct PArray<T> { }
+
+extension PArray : ExpressibleByArrayLiteral where T: P {
+  typealias ArrayLiteralElement = T
+
+  init(arrayLiteral elements: T...) { }
+}
+
+extension Int: P { }
+
+func testConditional(i: Int, s: String) {
+  let _: PArray<Int> = [i, i, i]
+  let _: PArray<String> = [s, s, s] // expected-error{{cannot convert value of type '[String]' to specified type 'PArray<String>'}}
+}
+
+
+// SR-8385
+enum SR8385: ExpressibleByStringLiteral {
+  case text(String)
+  init(stringLiteral value: String) {
+    self = .text(value)
+  }
+}
+
+func testSR8385() {
+  let _: [SR8385] = [SR8385("hello")]
+  let _: [SR8385] = [.text("hello")]
+  let _: [SR8385] = ["hello", SR8385.text("world")]
+  let _: [SR8385] = ["hello", .text("world")]
+}

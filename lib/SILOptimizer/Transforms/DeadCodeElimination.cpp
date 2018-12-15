@@ -49,8 +49,12 @@ static bool seemsUseful(SILInstruction *I) {
     return BI->getBuiltinInfo().ID == BuiltinValueKind::OnFastPath;
   }
 
-  if (isa<ReturnInst>(I) || isa<UnreachableInst>(I) || isa<ThrowInst>(I))
+  if (isa<UnreachableInst>(I))
     return true;
+  if (auto TI = dyn_cast<TermInst>(I)) {
+    if (TI->isFunctionExiting())
+      return true;
+  }
 
   return false;
 }
@@ -73,7 +77,7 @@ struct ControllingInfo {
 class DCE : public SILFunctionTransform {
   typedef llvm::DomTreeNodeBase<SILBasicBlock> PostDomTreeNode;
 
-  llvm::SmallPtrSet<ValueBase *, 16> LiveValues;
+  llvm::SmallPtrSet<SILNode *, 16> LiveValues;
   llvm::SmallPtrSet<SILBasicBlock *, 16> LiveBlocks;
   llvm::SmallVector<SILInstruction *, 64> Worklist;
   PostDominanceInfo *PDT;
@@ -117,8 +121,8 @@ class DCE : public SILFunctionTransform {
     if (!PDT->getRootNode())
       return;
 
-    DEBUG(F->dump());
-    DEBUG(PDT->print(llvm::dbgs()));
+    LLVM_DEBUG(F->dump());
+    LLVM_DEBUG(PDT->print(llvm::dbgs()));
 
     assert(Worklist.empty() && LiveValues.empty() && LiveBlocks.empty() &&
            ControllingInfoMap.empty() && ReverseDependencies.empty() &&
@@ -160,7 +164,7 @@ class DCE : public SILFunctionTransform {
   unsigned computeMinPredecessorLevels(PostDomTreeNode *Node);
   void insertControllingInfo(SILBasicBlock *Block, unsigned Level);
 
-  void markValueLive(ValueBase *V);
+  void markValueLive(SILNode *V);
   void markTerminatorArgsLive(SILBasicBlock *Pred, SILBasicBlock *Succ,
                               size_t ArgIndex);
   void markControllingTerminatorsLive(SILBasicBlock *Block);
@@ -178,12 +182,13 @@ class DCE : public SILFunctionTransform {
 
 // Keep track of the fact that V is live and add it to our worklist
 // so that we can process the values it depends on.
-void DCE::markValueLive(ValueBase *V) {
+void DCE::markValueLive(SILNode *V) {
+  V = V->getRepresentativeSILNodeInObject();
   if (LiveValues.count(V) || isa<SILUndef>(V))
     return;
 
-  DEBUG(llvm::dbgs() << "Marking as live:\n");
-  DEBUG(V->dump());
+  LLVM_DEBUG(llvm::dbgs() << "Marking as live:\n");
+  LLVM_DEBUG(V->dump());
 
   LiveValues.insert(V);
 
@@ -192,6 +197,8 @@ void DCE::markValueLive(ValueBase *V) {
     Worklist.push_back(Def);
     return;
   }
+
+  // TODO: MultiValueInstruction
 
   assert(isa<SILArgument>(V) &&
          "Only expected instructions and arguments!");
@@ -239,7 +246,7 @@ void DCE::markLive(SILFunction &F) {
         // A fix_lifetime (with a non-address type) is only alive if it's
         // definition is alive.
         SILValue Op = FLI->getOperand();
-        auto *OpInst = dyn_cast<SILInstruction>(Op);
+        auto *OpInst = Op->getDefiningInstruction();
         if (OpInst && !Op->getType().isAddress()) {
           addReverseDependency(OpInst, FLI);
         } else {
@@ -288,6 +295,8 @@ void DCE::markTerminatorArgsLive(SILBasicBlock *Pred,
   switch (Term->getTermKind()) {
   case TermKind::ReturnInst:
   case TermKind::ThrowInst:
+  case TermKind::UnwindInst:
+  case TermKind::YieldInst:
 
   case TermKind::UnreachableInst:
   case TermKind::SwitchValueInst:
@@ -363,8 +372,9 @@ void DCE::propagateLiveness(SILInstruction *I) {
     // Conceptually, the dependency from a debug instruction to its definition
     // is in reverse direction: Only if its definition is alive, also the
     // debug_value instruction is alive.
-    for (Operand *DU : getDebugUses(I))
-      markValueLive(DU->getUser());
+    for (auto result : I->getResults())
+      for (Operand *DU : getDebugUses(result))
+        markValueLive(DU->getUser());
 
     // Handle all other reverse-dependency instructions, like cond_fail and
     // fix_lifetime. Only if the definition is alive, the user itself is alive.
@@ -374,9 +384,10 @@ void DCE::propagateLiveness(SILInstruction *I) {
     return;
   }
 
-  switch (ValueKindAsTermKind(I->getKind())) {
+  switch (cast<TermInst>(I)->getTermKind()) {
   case TermKind::BranchInst:
   case TermKind::UnreachableInst:
+  case TermKind::UnwindInst:
     return;
 
   case TermKind::ReturnInst:
@@ -392,6 +403,7 @@ void DCE::propagateLiveness(SILInstruction *I) {
 
   case TermKind::TryApplyInst:
   case TermKind::SwitchValueInst:
+  case TermKind::YieldInst:
     for (auto &O : I->getAllOperands())
       markValueLive(O.get());
     return;
@@ -407,10 +419,12 @@ void DCE::propagateLiveness(SILInstruction *I) {
 SILBasicBlock *DCE::nearestUsefulPostDominator(SILBasicBlock *Block) {
   // Find the nearest post-dominator that has useful instructions.
   auto *PostDomNode = PDT->getNode(Block)->getIDom();
-  while (!LiveBlocks.count(PostDomNode->getBlock()))
+  while (PostDomNode && !LiveBlocks.count(PostDomNode->getBlock()))
     PostDomNode = PostDomNode->getIDom();
 
-  return PostDomNode->getBlock();
+  if (PostDomNode)
+    return PostDomNode->getBlock();
+  return nullptr;
 }
 
 // Replace the given conditional branching instruction with a plain
@@ -441,8 +455,8 @@ void DCE::replaceBranchWithJump(SILInstruction *Inst, SILBasicBlock *Block) {
   } else {
     Branch = SILBuilderWithScope(Inst).createBranch(Inst->getLoc(), Block);
   }
-  DEBUG(llvm::dbgs() << "Inserted unconditional branch:\n");
-  DEBUG(Branch->dump());
+  LLVM_DEBUG(llvm::dbgs() << "Inserted unconditional branch:\n");
+  LLVM_DEBUG(Branch->dump());
   (void)Branch;
 }
 
@@ -456,13 +470,10 @@ bool DCE::removeDead(SILFunction &F) {
       if (LiveValues.count(Inst))
         continue;
 
-      DEBUG(llvm::dbgs() << "Removing dead argument:\n");
-      DEBUG(Inst->dump());
+      LLVM_DEBUG(llvm::dbgs() << "Removing dead argument:\n");
+      LLVM_DEBUG(Inst->dump());
 
-      if (Inst->hasValue()) {
-        auto *Undef = SILUndef::get(Inst->getType(), Inst->getModule());
-        Inst->replaceAllUsesWith(Undef);
-      }
+      Inst->replaceAllUsesWithUndef();
 
       Changed = true;
     }
@@ -476,8 +487,11 @@ bool DCE::removeDead(SILFunction &F) {
       // We want to replace dead terminators with unconditional branches to
       // the nearest post-dominator that has useful instructions.
       if (isa<TermInst>(Inst)) {
-        replaceBranchWithJump(Inst,
-                              nearestUsefulPostDominator(Inst->getParent()));
+        SILBasicBlock *postDom = nearestUsefulPostDominator(Inst->getParent());
+        if (!postDom)
+          continue;
+  
+        replaceBranchWithJump(Inst, postDom);
         Inst->eraseFromParent();
         BranchesChanged = true;
         Changed = true;
@@ -486,14 +500,10 @@ bool DCE::removeDead(SILFunction &F) {
 
       ++NumDeletedInsts;
 
-      DEBUG(llvm::dbgs() << "Removing dead instruction:\n");
-      DEBUG(Inst->dump());
+      LLVM_DEBUG(llvm::dbgs() << "Removing dead instruction:\n");
+      LLVM_DEBUG(Inst->dump());
 
-      if (Inst->hasValue()) {
-        auto *Undef = SILUndef::get(Inst->getType(), Inst->getModule());
-        Inst->replaceAllUsesWith(Undef);
-      }
-
+      Inst->replaceAllUsesOfAllResultsWithUndef();
 
       if (isa<ApplyInst>(Inst))
         CallsChanged = true;

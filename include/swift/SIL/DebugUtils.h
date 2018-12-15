@@ -43,18 +43,12 @@ namespace swift {
 
 class SILInstruction;
   
-/// Returns true if the instruction \p Inst is an instruction which is only
-/// relevant for debug information and has no other impact on program semantics.
-inline bool isDebugInst(SILInstruction *Inst) {
-  return isa<DebugValueInst>(Inst) || isa<DebugValueAddrInst>(Inst);
-}
-
 /// Deletes all of the debug instructions that use \p Inst.
 inline void deleteAllDebugUses(ValueBase *Inst) {
   for (auto UI = Inst->use_begin(), E = Inst->use_end(); UI != E;) {
     auto *Inst = UI->getUser();
     UI++;
-    if (isDebugInst(Inst))
+    if (Inst->isDebugInstruction())
       Inst->eraseFromParent();
   }
 }
@@ -76,7 +70,7 @@ template <bool nonDebugInsts> class DebugUseIterator
         return;
       
       SILInstruction *User = BaseIterator->getUser();
-      if (isDebugInst(User) != nonDebugInsts)
+      if (User->isDebugInstruction() != nonDebugInsts)
         return;
       
       BaseIterator++;
@@ -143,6 +137,16 @@ inline bool onlyHaveDebugUses(SILValue V) {
   return NonDebugUses.begin() == NonDebugUses.end();
 }
 
+/// Return true if all of the results of the given instruction have no uses
+/// except debug instructions.
+inline bool onlyHaveDebugUsesOfAllResults(SILInstruction *I) {
+  for (auto result : I->getResults()) {
+    if (!onlyHaveDebugUses(result))
+      return false;
+  }
+  return true;
+}
+
 /// Returns true if a value (e.g. SILInstruction) has exactly one use which is
 /// not a debug instruction.
 inline bool hasOneNonDebugUse(SILValue V) {
@@ -165,20 +169,31 @@ inline SILInstruction *getSingleNonDebugUser(SILValue V) {
 /// Erases the instruction \p I from it's parent block and deletes it, including
 /// all debug instructions which use \p I.
 /// Precondition: The instruction may only have debug instructions as uses.
-/// If the iterator \p InstIter references any deleted debug instruction, it is
+/// If the iterator \p InstIter references any deleted instruction, it is
 /// incremented.
 inline void eraseFromParentWithDebugInsts(SILInstruction *I,
                                           SILBasicBlock::iterator &InstIter) {
-  while (!I->use_empty()) {
-    auto *User = I->use_begin()->getUser();
-    assert(isDebugInst(User));
-    if (InstIter != SILBasicBlock::iterator() &&
-        InstIter != I->getParent()->end() &&
-        &*InstIter == User) {
-      InstIter++;
+  auto results = I->getResults();
+
+  bool foundAny;
+  do {
+    foundAny = false;
+    for (auto result : results) {
+      while (!result->use_empty()) {
+        foundAny = true;
+        auto *User = result->use_begin()->getUser();
+        assert(User->isDebugInstruction());
+        if (InstIter == User->getIterator())
+          InstIter++;
+
+        User->eraseFromParent();
+      }
     }
-    User->eraseFromParent();
-  }
+  } while (foundAny);
+
+  if (InstIter == I->getIterator())
+    ++InstIter;
+
   I->eraseFromParent();
 }
 
@@ -189,6 +204,11 @@ inline void eraseFromParentWithDebugInsts(SILInstruction *I) {
   SILBasicBlock::iterator nullIter;
   eraseFromParentWithDebugInsts(I, nullIter);
 }
+
+/// Return true if the def-use graph rooted at \p V contains any non-debug,
+/// non-trivial users.
+bool hasNonTrivialNonDebugTransitiveUsers(
+    PointerUnion<SILInstruction *, SILArgument *> V);
 
 } // end namespace swift
 

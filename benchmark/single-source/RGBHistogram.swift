@@ -18,6 +18,11 @@
 import Foundation
 import TestsUtils
 
+public let RGBHistogram = [
+  BenchmarkInfo(name: "RGBHistogram", runFunction: run_RGBHistogram, tags: [.validation, .algorithm]),
+  BenchmarkInfo(name: "RGBHistogramOfObjects", runFunction: run_RGBHistogramOfObjects, tags: [.validation, .algorithm]),
+]
+
 @inline(never)
 public func run_RGBHistogram(_ N: Int) {
     var histogram = [(key: rrggbb_t, value: Int)]()
@@ -94,7 +99,7 @@ func isCorrectHistogram(_ histogram: [(key: rrggbb_t, value: Int)]) -> Bool {
 func createSortedSparseRGBHistogram<S : Sequence>(
   _ samples: S
 ) -> [(key: rrggbb_t, value: Int)]
-  where S.Iterator.Element == rrggbb_t
+  where S.Element == rrggbb_t
 {
     var histogram = Dictionary<rrggbb_t, Int>()
 
@@ -119,8 +124,8 @@ class Box<T : Hashable> : Hashable {
     value = v
   }
 
-  var hashValue: Int {
-    return value.hashValue
+  func hash(into hasher: inout Hasher) {
+    hasher.combine(value)
   }
 
   static func ==(lhs: Box, rhs: Box) -> Bool {
@@ -137,7 +142,7 @@ func isCorrectHistogramOfObjects(_ histogram: [(key: Box<rrggbb_t>, value: Box<I
 func createSortedSparseRGBHistogramOfObjects<S : Sequence>(
   _ samples: S
 ) -> [(key: Box<rrggbb_t>, value: Box<Int>)]
-  where S.Iterator.Element == rrggbb_t
+  where S.Element == rrggbb_t
 {
     var histogram = Dictionary<Box<rrggbb_t>, Box<Int>>()
 

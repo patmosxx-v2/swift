@@ -20,6 +20,7 @@
 #include "swift/AST/Decl.h"
 #include "swift/AST/Expr.h"
 #include "swift/AST/Initializer.h"
+#include "swift/AST/LazyResolver.h"
 #include "swift/AST/Module.h"
 #include "swift/AST/ParameterList.h"
 #include "swift/AST/Pattern.h"
@@ -170,22 +171,7 @@ static bool shouldSkipBraceStmtElement(ASTNode element) {
 
 /// Determine whether the given abstract storage declaration has accessors.
 static bool hasAccessors(AbstractStorageDecl *asd) {
-  switch (asd->getStorageKind()) {
-  case AbstractStorageDecl::Addressed:
-  case AbstractStorageDecl::AddressedWithObservers:
-  case AbstractStorageDecl::AddressedWithTrivialAccessors:
-  case AbstractStorageDecl::Computed:
-  case AbstractStorageDecl::ComputedWithMutableAddress:
-  case AbstractStorageDecl::InheritedWithObservers:
-  case AbstractStorageDecl::StoredWithObservers:
-    return asd->getBracesRange().isValid();
-
-  case AbstractStorageDecl::Stored:
-  case AbstractStorageDecl::StoredWithTrivialAccessors:
-    return false;
-  }
-
-  llvm_unreachable("Unhandled ContinuationKind in switch.");
+  return asd->getBracesRange().isValid();
 }
 
 void ASTScope::expand() const {
@@ -558,65 +544,14 @@ void ASTScope::expand() const {
       addChild(bodyChild);
     break;
 
-  case ASTScopeKind::ForStmt:
-    // The for statement encloses the scope introduced by its initializers.
-    addChild(new (ctx) ASTScope(ASTScopeKind::ForStmtInitializer,
-                                this, forStmt));
-    break;
-
-  case ASTScopeKind::ForStmtInitializer:
-    // Add a child for the condition, if present.
-    if (auto cond = forStmt->getCond()) {
-      if (auto condChild = createIfNeeded(this, cond.get()))
-        addChild(condChild);
-    }
-
-    // Add a child for the increment, if present.
-    if (auto incr = forStmt->getIncrement()) {
-      if (auto incrChild = createIfNeeded(this, incr.get()))
-        addChild(incrChild);
-    }
-
-    // Add a child for the body.
-    if (auto bodyChild = createIfNeeded(this, forStmt->getBody()))
-      addChild(bodyChild);
-    break;
-
   case ASTScopeKind::Accessors: {
     // Add children for all of the explicitly-written accessors.
-    SmallVector<ASTScope *, 4> accessors;
-    auto addAccessor = [&](FuncDecl *accessor) {
-      if (!accessor) return;
-      if (accessor->isImplicit()) return;
-      if (accessor->getStartLoc().isInvalid()) return;
-
+    for (auto accessor : abstractStorageDecl->getAllAccessors()) {
+      if (accessor->isImplicit() || accessor->getStartLoc().isInvalid())
+        continue;
       if (auto accessorChild = createIfNeeded(this, accessor))
-        accessors.push_back(accessorChild);
-    };
-
-    addAccessor(abstractStorageDecl->getGetter());
-    addAccessor(abstractStorageDecl->getSetter());
-    addAccessor(abstractStorageDecl->getMaterializeForSetFunc());
-    if (abstractStorageDecl->hasAddressors()) {
-      addAccessor(abstractStorageDecl->getAddressor());
-      addAccessor(abstractStorageDecl->getMutableAddressor());
+        addChild(accessorChild);
     }
-    if (abstractStorageDecl->hasObservers()) {
-      addAccessor(abstractStorageDecl->getDidSetFunc());
-      addAccessor(abstractStorageDecl->getWillSetFunc());
-    }
-
-    // Sort the accessors, because they can come in any order.
-    std::sort(accessors.begin(), accessors.end(),
-      [&](ASTScope *s1, ASTScope *s2) {
-        return ctx.SourceMgr.isBeforeInBuffer(s1->getSourceRange().Start,
-                                              s2->getSourceRange().Start);
-    });
-
-    // Add the accessors.
-    for (auto accessor : accessors)
-      addChild(accessor);
-
     break;
   }
 
@@ -682,27 +617,51 @@ ASTScope *ASTScope::createRoot(SourceFile *sourceFile) {
   return scope;
 }
 
+// FIXME: This is a vestige of multiple parameter lists.
+static ParamDecl *getParameter(AbstractFunctionDecl *func,
+                               unsigned listIndex,
+                               unsigned paramIndex) {
+  // Dig out the actual parameter.
+  if (auto *selfDecl = func->getImplicitSelfDecl()) {
+    if (listIndex == 0) {
+      assert(paramIndex == 0);
+      return selfDecl;
+    }
+
+    assert(listIndex == 1);
+    return func->getParameters()->get(paramIndex);
+  }
+
+  assert(listIndex == 0);
+  return func->getParameters()->get(paramIndex);
+}
+
 /// Find the parameter list and parameter index (into that list) corresponding
 /// to the next parameter.
 static Optional<std::pair<unsigned, unsigned>>
 findNextParameter(AbstractFunctionDecl *func, unsigned listIndex,
                   unsigned paramIndex) {
-  auto paramLists = func->getParameterLists();
   unsigned paramOffset = 1;
-  while (listIndex < paramLists.size()) {
-    auto currentList = paramLists[listIndex];
 
-    // If there is a parameter in this list, return it.
-    if (paramIndex + paramOffset < currentList->size()) {
-      return std::make_pair(listIndex, paramIndex + paramOffset);
+  if (func->hasImplicitSelfDecl()) {
+    if (listIndex > 1)
+      return None;
+
+    if (listIndex == 0) {
+      ++listIndex;
+      paramIndex = 0;
+      paramOffset = 0;
     }
 
-    // Move on to the next list.
-    ++listIndex;
-    paramIndex = 0;
-    paramOffset = 0;
+  } else {
+    if (listIndex > 0)
+      return None;
   }
 
+  if (paramIndex + paramOffset < func->getParameters()->size())
+    return std::make_pair(listIndex, paramIndex + paramOffset);
+
+  ++listIndex;
   return None;
 }
 
@@ -744,8 +703,6 @@ static bool parentDirectDescendedFromAbstractStorageDecl(
     case ASTScopeKind::CatchStmt:
     case ASTScopeKind::SwitchStmt:
     case ASTScopeKind::CaseStmt:
-    case ASTScopeKind::ForStmt:
-    case ASTScopeKind::ForStmtInitializer:
     case ASTScopeKind::Closure:
     case ASTScopeKind::TopLevelCode:
       // Not a direct descendant.
@@ -792,8 +749,6 @@ static bool parentDirectDescendedFromAbstractFunctionDecl(
     case ASTScopeKind::CatchStmt:
     case ASTScopeKind::SwitchStmt:
     case ASTScopeKind::CaseStmt:
-    case ASTScopeKind::ForStmt:
-    case ASTScopeKind::ForStmtInitializer:
     case ASTScopeKind::Closure:
     case ASTScopeKind::TopLevelCode:
       // Not a direct descendant.
@@ -839,8 +794,6 @@ static bool parentDirectDescendedFromTypeDecl(const ASTScope *parent,
     case ASTScopeKind::CatchStmt:
     case ASTScopeKind::SwitchStmt:
     case ASTScopeKind::CaseStmt:
-    case ASTScopeKind::ForStmt:
-    case ASTScopeKind::ForStmtInitializer:
     case ASTScopeKind::Closure:
     case ASTScopeKind::TopLevelCode:
       // Not a direct descendant.
@@ -856,10 +809,9 @@ ASTScope *ASTScope::createIfNeeded(const ASTScope *parent, Decl *decl) {
   if (decl->isImplicit()) return nullptr;
 
   // Accessors are always nested within their abstract storage declaration.
-  if (auto func = dyn_cast<FuncDecl>(decl)) {
-    if (func->isAccessor() &&
-        !parentDirectDescendedFromAbstractStorageDecl(
-            parent, func->getAccessorStorageDecl()))
+  if (auto accessor = dyn_cast<AccessorDecl>(decl)) {
+    if (!parentDirectDescendedFromAbstractStorageDecl(
+            parent, accessor->getStorage()))
       return nullptr;
   }
 
@@ -911,6 +863,7 @@ ASTScope *ASTScope::createIfNeeded(const ASTScope *parent, Decl *decl) {
   case DeclKind::Param:
   case DeclKind::EnumElement:
   case DeclKind::IfConfig:
+  case DeclKind::PoundDiagnostic:
   case DeclKind::MissingMember:
     // These declarations do not introduce scopes.
     return nullptr;
@@ -963,6 +916,7 @@ ASTScope *ASTScope::createIfNeeded(const ASTScope *parent, Decl *decl) {
   }
 
   case DeclKind::Func:
+  case DeclKind::Accessor:
   case DeclKind::Constructor:
   case DeclKind::Destructor: {
     auto abstractFunction = cast<AbstractFunctionDecl>(decl);
@@ -977,7 +931,7 @@ ASTScope *ASTScope::createIfNeeded(const ASTScope *parent, Decl *decl) {
     }
 
     // Figure out which parameter is next is the next one down.
-    Optional<std::pair<unsigned, unsigned>> nextParameter;
+    Optional<std::pair<unsigned, unsigned>> nextParameter = None;
     if (parent->getKind() == ASTScopeKind::AbstractFunctionParams &&
         parent->abstractFunctionParams.decl == decl) {
       nextParameter =
@@ -985,17 +939,15 @@ ASTScope *ASTScope::createIfNeeded(const ASTScope *parent, Decl *decl) {
                           parent->abstractFunctionParams.listIndex,
                           parent->abstractFunctionParams.paramIndex);
 
-    } else if (abstractFunction->getParameterList(0)->size() > 0) {
+    } else if (abstractFunction->hasImplicitSelfDecl() ||
+               abstractFunction->getParameters()->size() > 0) {
       nextParameter = std::make_pair(0, 0);
-    } else {
-      nextParameter = findNextParameter(abstractFunction, 0, 0);
     }
 
     if (nextParameter) {
-      // Dig out the actual parameter.
-      ParamDecl *currentParam =
-        abstractFunction->getParameterList(nextParameter->first)
-          ->get(nextParameter->second);
+      auto *currentParam = getParameter(abstractFunction,
+                                        nextParameter->first,
+                                        nextParameter->second);
 
       // Determine whether there is a default argument.
       ASTScope *defaultArgumentScope = nullptr;
@@ -1085,6 +1037,11 @@ ASTScope *ASTScope::createIfNeeded(const ASTScope *parent, Stmt *stmt) {
     return createIfNeeded(parent, returnStmt->getResult());
   }
 
+  case StmtKind::Yield: {
+    auto yieldStmt = cast<YieldStmt>(stmt);
+    return createIfNeeded(parent, yieldStmt->getYields());
+  }
+
   case StmtKind::Defer:
     return createIfNeeded(parent, cast<DeferStmt>(stmt)->getTempDecl());
 
@@ -1112,10 +1069,6 @@ ASTScope *ASTScope::createIfNeeded(const ASTScope *parent, Stmt *stmt) {
     return new (ctx) ASTScope(ASTScopeKind::ForEachStmt, parent,
                               cast<ForEachStmt>(stmt));
 
-  case StmtKind::For:
-    return new (ctx) ASTScope(ASTScopeKind::ForStmt, parent,
-                              cast<ForStmt>(stmt));
-
   case StmtKind::Do:
     return createIfNeeded(parent, cast<DoStmt>(stmt)->getBody());
 
@@ -1136,6 +1089,7 @@ ASTScope *ASTScope::createIfNeeded(const ASTScope *parent, Stmt *stmt) {
   case StmtKind::Fallthrough:
   case StmtKind::Fail:
   case StmtKind::Throw:
+  case StmtKind::PoundAssert:
     // Nothing to do for these statements.
     return nullptr;
   }
@@ -1144,9 +1098,8 @@ ASTScope *ASTScope::createIfNeeded(const ASTScope *parent, Stmt *stmt) {
 }
 
 /// Find all of the (non-nested) closures referenced within this expression.
-static SmallVector<ClosureExpr *, 4> findClosures(Expr *expr) {
-  SmallVector<ClosureExpr *, 4> closures;
-  if (!expr) return closures;
+static void findClosures(Expr *expr, SmallVectorImpl<ClosureExpr *> &closures) {
+  assert(expr);
 
   /// AST walker that finds top-level closures in an expression.
   class ClosureFinder : public ASTWalker {
@@ -1184,14 +1137,20 @@ static SmallVector<ClosureExpr *, 4> findClosures(Expr *expr) {
   };
 
   expr->walk(ClosureFinder(closures));
-  return closures;
 }
 
 ASTScope *ASTScope::createIfNeeded(const ASTScope *parent, Expr *expr) {
   if (!expr) return nullptr;
+  return createIfNeeded(parent, llvm::makeArrayRef(expr));
+}
 
-  // Dig out closure expressions within the given expression.
-  auto closures = findClosures(expr);
+ASTScope *ASTScope::createIfNeeded(const ASTScope *parent,
+                                   ArrayRef<Expr *> exprs) {
+  SmallVector<ClosureExpr*, 4> closures;
+
+  // Dig out closure expressions within the given expressions.
+  for (auto expr: exprs)
+    findClosures(expr, closures);
   if (closures.empty())
     return nullptr;
 
@@ -1235,8 +1194,6 @@ bool ASTScope::canStealContinuation() const {
   case ASTScopeKind::CatchStmt:
   case ASTScopeKind::SwitchStmt:
   case ASTScopeKind::CaseStmt:
-  case ASTScopeKind::ForStmt:
-  case ASTScopeKind::ForStmtInitializer:
   case ASTScopeKind::Closure:
   case ASTScopeKind::TypeDecl:
   case ASTScopeKind::AbstractFunctionDecl:
@@ -1366,8 +1323,6 @@ ASTContext &ASTScope::getASTContext() const {
   case ASTScopeKind::CatchStmt:
   case ASTScopeKind::SwitchStmt:
   case ASTScopeKind::CaseStmt:
-  case ASTScopeKind::ForStmt:
-  case ASTScopeKind::ForStmtInitializer:
   case ASTScopeKind::Closure:
     return getParent()->getASTContext();
 
@@ -1454,8 +1409,7 @@ SourceRange ASTScope::getSourceRangeImpl() const {
   case ASTScopeKind::AbstractFunctionDecl: {
     // For an accessor, all of the parameters are implicit, so start them at
     // the start location of the accessor.
-    if (isa<FuncDecl>(abstractFunction) &&
-        cast<FuncDecl>(abstractFunction)->isAccessor())
+    if (isa<AccessorDecl>(abstractFunction))
       return SourceRange(abstractFunction->getLoc(),
                          abstractFunction->getEndLoc());
 
@@ -1467,8 +1421,7 @@ SourceRange ASTScope::getSourceRangeImpl() const {
 
     // For an accessor, all of the parameters are implicit, so start them at
     // the start location of the accessor.
-    if (isa<FuncDecl>(abstractFunctionParams.decl) &&
-        cast<FuncDecl>(abstractFunctionParams.decl)->isAccessor())
+    if (isa<AccessorDecl>(abstractFunctionParams.decl))
       return SourceRange(abstractFunctionParams.decl->getLoc(), endLoc);
 
     // For the 'self' parameter of a member function, use the start of the
@@ -1480,15 +1433,14 @@ SourceRange ASTScope::getSourceRangeImpl() const {
       if (isa<DestructorDecl>(abstractFunctionParams.decl)) {
         startLoc = abstractFunctionParams.decl->getNameLoc();
       } else {
-        startLoc = abstractFunctionParams.decl->getParameterList(1)
+        startLoc = abstractFunctionParams.decl->getParameters()
                      ->getLParenLoc();
       }
       return SourceRange(startLoc, endLoc);
     }
 
     // Otherwise, find the end of this parameter.
-    auto param = abstractFunctionParams.decl->getParameterList(
-                   abstractFunctionParams.listIndex)
+    auto param = abstractFunctionParams.decl->getParameters()
                      ->get(abstractFunctionParams.paramIndex);
     return SourceRange(param->getEndLoc(), endLoc);
   }
@@ -1639,12 +1591,6 @@ SourceRange ASTScope::getSourceRangeImpl() const {
     // Otherwise, it covers the body.
     return caseStmt->getBody()->getSourceRange();
 
-  case ASTScopeKind::ForStmt:
-    return forStmt->getSourceRange();
-
-  case ASTScopeKind::ForStmtInitializer:
-    return SourceRange(forStmt->getFirstSemicolonLoc(), forStmt->getEndLoc());
-
   case ASTScopeKind::Accessors:
     return abstractStorageDecl->getBracesRange();
 
@@ -1764,8 +1710,6 @@ DeclContext *ASTScope::getDeclContext() const {
   case ASTScopeKind::CatchStmt:
   case ASTScopeKind::SwitchStmt:
   case ASTScopeKind::CaseStmt:
-  case ASTScopeKind::ForStmt:
-  case ASTScopeKind::ForStmtInitializer:
   case ASTScopeKind::AbstractFunctionBody:
     return nullptr;
   }
@@ -1805,7 +1749,6 @@ SmallVector<ValueDecl *, 4> ASTScope::getLocalBindings() const {
   case ASTScopeKind::ForEachStmt:
   case ASTScopeKind::DoCatchStmt:
   case ASTScopeKind::SwitchStmt:
-  case ASTScopeKind::ForStmt:
   case ASTScopeKind::Accessors:
   case ASTScopeKind::TopLevelCode:
     // No local declarations.
@@ -1817,11 +1760,6 @@ SmallVector<ValueDecl *, 4> ASTScope::getLocalBindings() const {
     SourceRange range = getSourceRangeImpl();
     if (range.Start == range.End)
       break;
-
-    // Bind this extension, if we haven't done so already.
-    if (!extension->getExtendedType())
-      if (auto resolver = extension->getASTContext().getLazyResolver())
-        resolver->bindExtension(extension);
 
     // If there are generic parameters, add them.
     for (auto genericParams = extension->getGenericParams();
@@ -1838,9 +1776,10 @@ SmallVector<ValueDecl *, 4> ASTScope::getLocalBindings() const {
     break;
 
   case ASTScopeKind::AbstractFunctionParams:
-    result.push_back(abstractFunctionParams.decl->getParameterList(
-                         abstractFunctionParams.listIndex)
-                       ->get(abstractFunctionParams.paramIndex));
+    result.push_back(
+      getParameter(abstractFunctionParams.decl,
+                   abstractFunctionParams.listIndex,
+                   abstractFunctionParams.paramIndex));
     break;
 
   case ASTScopeKind::AfterPatternBinding:
@@ -1874,13 +1813,6 @@ SmallVector<ValueDecl *, 4> ASTScope::getLocalBindings() const {
   case ASTScopeKind::CaseStmt:
     for (const auto &item : caseStmt->getCaseLabelItems())
       handlePattern(item.getPattern());
-    break;
-
-  case ASTScopeKind::ForStmtInitializer:
-    for (auto decl : forStmt->getInitializerVarDecls()) {
-      if (auto value = dyn_cast<ValueDecl>(decl))
-        result.push_back(value);
-    }
     break;
 
   case ASTScopeKind::PatternInitializer: {
@@ -1979,8 +1911,8 @@ void ASTScope::print(llvm::raw_ostream &out, unsigned level,
     out << " extension of '";
     if (auto typeRepr = extension->getExtendedTypeLoc().getTypeRepr())
       typeRepr->print(out);
-    else
-      extension->getExtendedType()->print(out);
+    else if (auto nominal = extension->getExtendedNominal())
+      out << nominal->getName();
     out << "'";
     printRange();
     break;
@@ -2128,18 +2060,6 @@ void ASTScope::print(llvm::raw_ostream &out, unsigned level,
   case ASTScopeKind::CaseStmt:
     printScopeKind("CaseStmt");
     printAddress(caseStmt);
-    printRange();
-    break;
-
-  case ASTScopeKind::ForStmt:
-    printScopeKind("ForStmt");
-    printAddress(forStmt);
-    printRange();
-    break;
-
-  case ASTScopeKind::ForStmtInitializer:
-    printScopeKind("ForStmtInitializer");
-    printAddress(forStmt);
     printRange();
     break;
 

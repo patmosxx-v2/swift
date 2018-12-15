@@ -28,24 +28,26 @@
 
 import someModule
 
-// CHECK: !{{[0-9]+}} = !{i32 6, !"Linker Options", ![[LINK_LIST:[0-9]+]]}
-// CHECK: ![[LINK_LIST]] = !{
+// CHECK: !llvm.linker.options = !{
 // CHECK-DAG: !{{[0-9]+}} = !{!"-lmagic"}
 // CHECK-DAG: !{{[0-9]+}} = !{!"-lmodule"}
 
-// FRAMEWORK: !{{[0-9]+}} = !{i32 6, !"Linker Options", ![[LINK_LIST:[0-9]+]]}
-// FRAMEWORK: ![[LINK_LIST]] = !{
+// FRAMEWORK: !llvm.linker.options = !{
 // FRAMEWORK-DAG: !{{[0-9]+}} = !{!"-lmagic"}
 // FRAMEWORK-DAG: !{{[0-9]+}} = !{!"-lmodule"}
 // FRAMEWORK-DAG: !{{[0-9]+}} = !{!"-framework", !"someModule"}
 
 // NO-FORCE-LOAD-NOT: FORCE_LOAD
-// FORCE-LOAD: @"_swift_FORCE_LOAD_$_module" = common global i1 false
-// FORCE-LOAD-HEX: @"_swift_FORCE_LOAD_$306d6f64756c65" = common global i1 false
+// FORCE-LOAD: define void @"_swift_FORCE_LOAD_$_module"() {
+// FORCE-LOAD:   ret void
+// FORCE-LOAD: }
+// FORCE-LOAD-HEX: define void @"_swift_FORCE_LOAD_$306d6f64756c65"() {
+// FORCE-LOAD-HEX:   ret void
+// FORCE-LOAD-HEX: }
 
-// FORCE-LOAD-CLIENT: @"_swift_FORCE_LOAD_$_module" = external global i1
-// FORCE-LOAD-CLIENT: @"_swift_FORCE_LOAD_$_module_$_autolinking" = weak hidden constant i1* @"_swift_FORCE_LOAD_$_module"
-
+// FORCE-LOAD-CLIENT: @"_swift_FORCE_LOAD_$_module_$_autolinking" = weak hidden constant void ()* @"_swift_FORCE_LOAD_$_module"
 // FORCE-LOAD-CLIENT: @llvm.used = appending global [{{[0-9]+}} x i8*] [
-// FORCE-LOAD-CLIENT: i8* bitcast (i1** @"_swift_FORCE_LOAD_$_module_$_autolinking" to i8*)
+// FORCE-LOAD-CLIENT: i8* bitcast (void ()** @"_swift_FORCE_LOAD_$_module_$_autolinking" to i8*)
 // FORCE-LOAD-CLIENT: ], section "llvm.metadata"
+// FORCE-LOAD-CLIENT: declare void @"_swift_FORCE_LOAD_$_module"()
+

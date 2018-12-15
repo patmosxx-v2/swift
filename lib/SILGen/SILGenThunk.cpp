@@ -20,9 +20,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "SILGenFunction.h"
-#include "Scope.h"
 #include "ManagedValue.h"
+#include "SILGenFunction.h"
+#include "SILGenFunctionBuilder.h"
+#include "Scope.h"
 #include "swift/AST/ASTMangler.h"
 #include "swift/AST/DiagnosticsSIL.h"
 #include "swift/AST/GenericEnvironment.h"
@@ -33,49 +34,62 @@
 using namespace swift;
 using namespace Lowering;
 
-SILFunction *SILGenModule::getDynamicThunk(SILDeclRef constant,
-                                           SILConstantInfo constantInfo) {
-  // Mangle the constant with a _TTD header.
-  auto name = constant.mangle(SILDeclRef::ManglingKind::DynamicThunk);
+SILValue SILGenFunction::emitClassMethodRef(SILLocation loc,
+                                            SILValue selfPtr,
+                                            SILDeclRef constant,
+                                            CanSILFunctionType constantTy) {
+  assert(!constant.isForeign);
+  return B.createClassMethod(loc, selfPtr, constant,
+                             SILType::getPrimitiveObjectType(constantTy));
+}
 
-  auto F = M.getOrCreateFunction(constant.getDecl(), name, SILLinkage::Shared,
-                                 constantInfo.SILFnType, IsBare, IsTransparent,
-                                 IsSerializable, IsThunk);
+SILFunction *SILGenModule::getDynamicThunk(SILDeclRef constant,
+                                           CanSILFunctionType constantTy) {
+  assert(constant.kind != SILDeclRef::Kind::Allocator &&
+         "allocating entry point for constructor is never dynamic");
+  // Mangle the constant with a TD suffix.
+  auto nameTmp = constant.mangle(SILDeclRef::ManglingKind::DynamicThunk);
+  auto name = M.allocateCopy(nameTmp);
+
+  SILGenFunctionBuilder builder(*this);
+  auto F = builder.getOrCreateFunction(
+      constant.getDecl(), name, SILLinkage::Shared, constantTy, IsBare,
+      IsTransparent, IsSerializable, IsNotDynamic, ProfileCounter(), IsThunk);
 
   if (F->empty()) {
     // Emit the thunk if we haven't yet.
     // Currently a dynamic thunk looks just like a foreign-to-native thunk around
     // an ObjC method. This would change if we introduced a native
     // runtime-hookable mechanism.
-    SILGenFunction SGF(*this, *F);
+    SILGenFunction SGF(*this, *F, SwiftModule);
     SGF.emitForeignToNativeThunk(constant);
   }
 
   return F;
 }
 
-SILValue SILGenFunction::emitDynamicMethodRef(SILLocation loc,
-                                              SILDeclRef constant,
-                                              SILConstantInfo constantInfo) {
+ManagedValue
+SILGenFunction::emitDynamicMethodRef(SILLocation loc, SILDeclRef constant,
+                                     CanSILFunctionType constantTy) {
   // If the method is foreign, its foreign thunk will handle the dynamic
   // dispatch for us.
   if (constant.isForeignToNativeThunk()) {
     if (!SGM.hasFunction(constant))
       SGM.emitForeignToNativeThunk(constant);
-    return B.createFunctionRef(loc, SGM.getFunction(constant, NotForDefinition));
+    return ManagedValue::forUnmanaged(B.createFunctionRefFor(
+        loc, SGM.getFunction(constant, NotForDefinition)));
   }
 
   // Otherwise, we need a dynamic dispatch thunk.
-  SILFunction *F = SGM.getDynamicThunk(constant, constantInfo);
+  SILFunction *F = SGM.getDynamicThunk(constant, constantTy);
 
-  return B.createFunctionRef(loc, F);
+  return ManagedValue::forUnmanaged(B.createFunctionRefFor(loc, F));
 }
 
-static SILValue getNextUncurryLevelRef(SILGenFunction &gen,
-                                       SILLocation loc,
-                                       SILDeclRef thunk,
-                                       SILValue selfArg,
-                                       SubstitutionList curriedSubs) {
+static ManagedValue getNextUncurryLevelRef(SILGenFunction &SGF, SILLocation loc,
+                                           SILDeclRef thunk,
+                                           ManagedValue selfArg,
+                                           SubstitutionMap curriedSubs) {
   auto *vd = thunk.getDecl();
 
   // Reference the next uncurrying level of the function.
@@ -84,48 +98,44 @@ static SILValue getNextUncurryLevelRef(SILGenFunction &gen,
 
   // If the function is natively foreign, reference its foreign entry point.
   if (requiresForeignToNativeThunk(vd))
-    return gen.emitGlobalFunctionRef(loc, next);
+    return ManagedValue::forUnmanaged(SGF.emitGlobalFunctionRef(loc, next));
 
   // If the thunk is a curry thunk for a direct method reference, we are
   // doing a direct dispatch (eg, a fragile 'super.foo()' call).
   if (thunk.isDirectReference)
-    return gen.emitGlobalFunctionRef(loc, next);
+    return ManagedValue::forUnmanaged(SGF.emitGlobalFunctionRef(loc, next));
 
-  auto constantInfo = gen.SGM.Types.getConstantInfo(next);
+  auto constantInfo = SGF.SGM.Types.getConstantInfo(next);
 
   if (auto *func = dyn_cast<AbstractFunctionDecl>(vd)) {
     if (getMethodDispatch(func) == MethodDispatch::Class) {
       // Use the dynamic thunk if dynamic.
-      if (vd->isDynamic()) {
-        auto dynamicThunk = gen.SGM.getDynamicThunk(next, constantInfo);
-        return gen.B.createFunctionRef(loc, dynamicThunk);
+      if (vd->isObjCDynamic()) {
+        return SGF.emitDynamicMethodRef(loc, next, constantInfo.SILFnType);
       }
 
-      return gen.B.createClassMethod(loc, selfArg, next);
+      auto methodTy = SGF.SGM.Types.getConstantOverrideType(next);
+      SILValue result =
+          SGF.emitClassMethodRef(loc, selfArg.getValue(), next, methodTy);
+      return ManagedValue::forUnmanaged(result);
     }
 
     // If the fully-uncurried reference is to a generic method, look up the
     // witness.
     if (constantInfo.SILFnType->getRepresentation()
           == SILFunctionTypeRepresentation::WitnessMethod) {
-      auto protocol =
-        func->getDeclContext()->getAsProtocolOrProtocolExtensionContext();
-      auto subMap = func->getGenericSignature()
-        ->getSubstitutionMap(curriedSubs);
+      auto protocol = func->getDeclContext()->getSelfProtocolDecl();
       auto origSelfType = protocol->getSelfInterfaceType()->getCanonicalType();
-      auto substSelfType = origSelfType.subst(subMap)->getCanonicalType();
-      auto conformance = subMap.lookupConformance(origSelfType, protocol);
-      SILValue OpenedExistential;
-      if (substSelfType->isOpenedExistential())
-        OpenedExistential = selfArg;
-      return gen.B.createWitnessMethod(loc, substSelfType, *conformance, next,
-                                      constantInfo.getSILType(),
-                                      OpenedExistential);
+      auto substSelfType = origSelfType.subst(curriedSubs)->getCanonicalType();
+      auto conformance = curriedSubs.lookupConformance(origSelfType, protocol);
+      auto result = SGF.B.createWitnessMethod(loc, substSelfType, *conformance,
+                                              next, constantInfo.getSILType());
+      return ManagedValue::forUnmanaged(result);
     }
   }
 
   // Otherwise, emit a direct call.
-  return gen.emitGlobalFunctionRef(loc, next);
+  return ManagedValue::forUnmanaged(SGF.emitGlobalFunctionRef(loc, next));
 }
 
 void SILGenFunction::emitCurryThunk(SILDeclRef thunk) {
@@ -139,36 +149,47 @@ void SILGenFunction::emitCurryThunk(SILDeclRef thunk) {
     (void) fd;
   }
 
-  auto selfTy = vd->getInterfaceType()->castTo<AnyFunctionType>()
-    ->getInput();
-  selfTy = vd->getInnermostDeclContext()->mapTypeIntoContext(selfTy);
-  auto selfArg = F.begin()->createFunctionArgument(getLoweredType(selfTy));
+  SILLocation loc(vd);
+  Scope S(*this, vd);
+
+  auto thunkFnTy = SGM.Types.getConstantInfo(thunk).SILFnType;
+  SILFunctionConventions fromConv(thunkFnTy, SGM.M);
+
+  auto selfTy = fromConv.getSILType(thunkFnTy->getSelfParameter());
+  selfTy = F.mapTypeIntoContext(selfTy);
+  ManagedValue selfArg = B.createInputFunctionArgument(selfTy, loc);
 
   // Forward substitutions.
-  auto subs = F.getForwardingSubstitutions();
+  auto subs = F.getForwardingSubstitutionMap();
 
-  SILValue toFn = getNextUncurryLevelRef(*this, vd, thunk,
-                                         selfArg, subs);
+  ManagedValue toFn = getNextUncurryLevelRef(*this, loc, thunk, selfArg, subs);
 
   // FIXME: Using the type from the ConstantInfo instead of looking at
   // getConstantOverrideInfo() for methods looks suspect in the presence
   // of covariant overrides and multiple vtable entries.
-  SILFunctionConventions fromConv(
-      SGM.Types.getConstantInfo(thunk).SILFnType, SGM.M);
   SILType resultTy = fromConv.getSingleSILResultType();
   resultTy = F.mapTypeIntoContext(resultTy);
-  auto substTy = toFn->getType().substGenericArgs(SGM.M,  subs);
+  auto substTy = toFn.getType().substGenericArgs(SGM.M, subs);
 
   // Partially apply the next uncurry level and return the result closure.
-  auto closureTy =
-    SILGenBuilder::getPartialApplyResultType(toFn->getType(), /*appliedParams=*/1,
-                                             SGM.M, subs,
-                                             ParameterConvention::Direct_Owned);
-  SILInstruction *toClosure =
-    B.createPartialApply(vd, toFn, substTy, subs, {selfArg}, closureTy);
-  if (resultTy != closureTy)
-    toClosure = B.createConvertFunction(vd, toClosure, resultTy);
-  B.createReturn(ImplicitReturnLocation::getImplicitReturnLoc(vd), toClosure);
+  selfArg = selfArg.ensurePlusOne(*this, loc);
+  auto calleeConvention = ParameterConvention::Direct_Guaranteed;
+  auto closureTy = SILGenBuilder::getPartialApplyResultType(
+      toFn.getType(), /*appliedParams=*/1, SGM.M, subs, calleeConvention);
+  ManagedValue toClosure =
+      B.createPartialApply(loc, toFn, substTy, subs, {selfArg}, closureTy);
+  if (resultTy != closureTy) {
+    CanSILFunctionType resultFnTy = resultTy.castTo<SILFunctionType>();
+    CanSILFunctionType closureFnTy = closureTy.castTo<SILFunctionType>();
+    if (resultFnTy->isABICompatibleWith(closureFnTy).isCompatible()) {
+      toClosure = B.createConvertFunction(loc, toClosure, resultTy);
+    } else {
+      toClosure =
+          emitCanonicalFunctionThunk(loc, toClosure, closureFnTy, resultFnTy);
+    }
+  }
+  toClosure = S.popPreservingValue(toClosure);
+  B.createReturn(ImplicitReturnLocation::getImplicitReturnLoc(loc), toClosure);
 }
 
 void SILGenModule::emitCurryThunk(SILDeclRef constant) {
@@ -183,7 +204,7 @@ void SILGenModule::emitCurryThunk(SILDeclRef constant) {
   preEmitFunction(constant, fd, f, fd);
   PrettyStackTraceSILFunction X("silgen emitCurryThunk", f);
 
-  SILGenFunction(*this, *f).emitCurryThunk(constant);
+  SILGenFunction(*this, *f, SwiftModule).emitCurryThunk(constant);
   postEmitFunction(constant, f);
 }
 
@@ -193,10 +214,10 @@ void SILGenModule::emitForeignToNativeThunk(SILDeclRef thunk) {
   SILFunction *f = getFunction(thunk, ForDefinition);
   f->setThunk(IsThunk);
   if (thunk.asForeign().isClangGenerated())
-    f->setSerialized(IsSerialized);
+    f->setSerialized(IsSerializable);
   preEmitFunction(thunk, thunk.getDecl(), f, thunk.getDecl());
   PrettyStackTraceSILFunction X("silgen emitForeignToNativeThunk", f);
-  SILGenFunction(*this, *f).emitForeignToNativeThunk(thunk);
+  SILGenFunction(*this, *f, SwiftModule).emitForeignToNativeThunk(thunk);
   postEmitFunction(thunk, f);
 }
 
@@ -213,13 +234,14 @@ void SILGenModule::emitNativeToForeignThunk(SILDeclRef thunk) {
   PrettyStackTraceSILFunction X("silgen emitNativeToForeignThunk", f);
   f->setBare(IsBare);
   f->setThunk(IsThunk);
-  SILGenFunction(*this, *f).emitNativeToForeignThunk(thunk);
+  SILGenFunction(*this, *f, SwiftModule).emitNativeToForeignThunk(thunk);
   postEmitFunction(thunk, f);
 }
 
-SILValue SILGenFunction::emitGlobalFunctionRef(SILLocation loc,
-                                               SILDeclRef constant,
-                                               SILConstantInfo constantInfo) {
+SILValue
+SILGenFunction::emitGlobalFunctionRef(SILLocation loc, SILDeclRef constant,
+                                      SILConstantInfo constantInfo,
+                                      bool callPreviousDynamicReplaceableImpl) {
   assert(constantInfo == getConstantInfo(constant));
 
   // Builtins must be fully applied at the point of reference.
@@ -245,30 +267,37 @@ SILValue SILGenFunction::emitGlobalFunctionRef(SILLocation loc,
 
   auto f = SGM.getFunction(constant, NotForDefinition);
   assert(f->getLoweredFunctionType() == constantInfo.SILFnType);
-  return B.createFunctionRef(loc, f);
+  if (callPreviousDynamicReplaceableImpl)
+    return B.createPreviousDynamicFunctionRef(loc, f);
+  else
+    return B.createFunctionRefFor(loc, f);
 }
 
 SILFunction *SILGenModule::
-getOrCreateReabstractionThunk(GenericEnvironment *genericEnv,
-                              CanSILFunctionType thunkType,
+getOrCreateReabstractionThunk(CanSILFunctionType thunkType,
                               CanSILFunctionType fromType,
                               CanSILFunctionType toType,
                               IsSerialized_t Serialized) {
+  // The reference to the thunk is likely @noescape, but declarations are always
+  // escaping.
+  auto thunkDeclType =
+      thunkType->getWithExtInfo(thunkType->getExtInfo().withNoEscape(false));
+
   // Mangle the reabstraction thunk.
   // Substitute context parameters out of the "from" and "to" types.
-  auto fromInterfaceType
-      = GenericEnvironment::mapTypeOutOfContext(genericEnv, fromType)
-              ->getCanonicalType();
-  auto toInterfaceType
-      = GenericEnvironment::mapTypeOutOfContext(genericEnv, toType)
-              ->getCanonicalType();
+  auto fromInterfaceType = fromType->mapTypeOutOfContext()
+    ->getCanonicalType();
+  auto toInterfaceType = toType->mapTypeOutOfContext()
+    ->getCanonicalType();
 
   Mangle::ASTMangler NewMangler;
   std::string name = NewMangler.mangleReabstractionThunkHelper(thunkType,
                        fromInterfaceType, toInterfaceType, M.getSwiftModule());
   
   auto loc = RegularLocation::getAutoGeneratedLocation();
-  return M.getOrCreateSharedFunction(loc, name, thunkType, IsBare,
-                                     IsTransparent, IsSerializable,
-                                     IsReabstractionThunk);
+
+  SILGenFunctionBuilder builder(*this);
+  return builder.getOrCreateSharedFunction(
+      loc, name, thunkDeclType, IsBare, IsTransparent, IsSerializable,
+      ProfileCounter(), IsReabstractionThunk, IsNotDynamic);
 }

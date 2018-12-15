@@ -138,3 +138,89 @@ func shrinkTooFar(_ : Double, closure : ()->()) {}
 func testShrinkTooFar() {
   shrinkTooFar(0*0*0) {}
 }
+
+// rdar://problem/33759839
+
+enum E_33759839 {
+    case foo
+    case bar(String)
+}
+
+let foo_33759839 = ["a", "b", "c"]
+let bar_33759839 = ["A", "B", "C"]
+
+let _: [E_33759839] = foo_33759839.map { .bar($0) } +
+                      bar_33759839.map { .bar($0) } +
+                      [E_33759839.foo] // Ok
+
+// rdar://problem/28688585
+
+class B_28688585 {
+  var value: Int
+
+  init(value: Int) {
+    self.value = value
+  }
+
+  func add(_ other: B_28688585) -> B_28688585 {
+    return B_28688585(value: value + other.value)
+  }
+}
+
+class D_28688585 : B_28688585 {
+}
+
+func + (lhs: B_28688585, rhs: B_28688585) -> B_28688585 {
+  return lhs.add(rhs)
+}
+
+let var_28688585 = D_28688585(value: 1)
+_ = var_28688585 + var_28688585 + var_28688585 // Ok
+
+// rdar://problem/35740653 - Fix `LinkedExprAnalyzer` greedy operator linking
+
+struct S_35740653 {
+  var v: Double = 42
+
+  static func value(_ value: Double) -> S_35740653 {
+    return S_35740653(v: value)
+  }
+
+  static func / (lhs: S_35740653, rhs: S_35740653) -> Double {
+     return lhs.v / rhs.v
+  }
+}
+
+func rdar35740653(val: S_35740653) {
+  let _ = 0...Int(val / .value(1.0 / 42.0)) // Ok
+}
+
+protocol P_37290898 {}
+struct S_37290898: P_37290898 {}
+
+func rdar37290898(_ arr: inout [P_37290898], _ element: S_37290898?) {
+  arr += [element].compactMap { $0 } // Ok
+}
+
+// SR-8221
+infix operator ??=
+func ??= <T>(lhs: inout T?, rhs: T?) {}
+var c: Int = 0
+c ??= 5 // expected-error{{binary operator '??=' cannot be applied to two 'Int' operands}}
+// expected-note@-1{{expected an argument list of type '(inout T?, T?)'}}
+
+func rdar46459603() {
+  enum E {
+  case foo(value: String)
+  }
+
+  let e = E.foo(value: "String")
+  var arr = ["key": e]
+
+  _ = arr.values == [e]
+  // expected-error@-1 {{binary operator '==' cannot be applied to operands of type 'Dictionary<String, E>.Values' and '[E]'}}
+  // expected-note@-2  {{expected an argument list of type '(Self, Self)'}}
+  _ = [arr.values] == [[e]]
+  // expected-error@-1 {{binary operator '==' cannot be applied to operands of type '[Dictionary<String, E>.Values]' and '[[E]]'}}
+  // expected-note@-2  {{expected an argument list of type '(Self, Self)'}}
+}

@@ -1,16 +1,18 @@
-add_swift_library(swiftSyntax STATIC
-  DeclSyntax.cpp
-  ExprSyntax.cpp
-  Format.cpp
-  TokenSyntax.cpp
-  GenericSyntax.cpp
-  LegacyASTTransformer.cpp
-  Trivia.cpp
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL Windows)
+  set(SWIFT_GYB_FLAGS --line-directive "^\"#line %(line)d \\\"%(file)s\\\"^\"")
+else()
+  set(SWIFT_GYB_FLAGS --line-directive "\'#line" "%(line)d" "\"%(file)s\"\'")
+endif()
+
+add_swift_host_library(swiftSyntax STATIC
+  SyntaxNodes.cpp.gyb
+  SyntaxBuilders.cpp.gyb
+  SyntaxKind.cpp.gyb
+  SyntaxFactory.cpp.gyb
+  SyntaxVisitor.cpp.gyb
+  Trivia.cpp.gyb
   RawSyntax.cpp
-  StmtSyntax.cpp
   Syntax.cpp
-  SyntaxFactory.cpp
   SyntaxData.cpp
-  TypeSyntax.cpp
-  UnknownSyntax.cpp
-)
+  SyntaxSerialization.cpp.gyb
+  UnknownSyntax.cpp)

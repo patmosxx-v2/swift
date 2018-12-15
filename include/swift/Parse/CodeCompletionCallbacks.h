@@ -2,7 +2,7 @@
 //
 // This source file is part of the Swift.org open source project
 //
-// Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
+// Copyright (c) 2014 - 2018 Apple Inc. and the Swift project authors
 // Licensed under Apache License v2.0 with Runtime Library Exception
 //
 // See https://swift.org/LICENSE.txt for license information
@@ -29,20 +29,16 @@ enum class ObjCSelectorContext {
   SetterSelector
 };
 
-/// \brief Parser's interface to code completion.
+/// Parser's interface to code completion.
 class CodeCompletionCallbacks {
 protected:
   Parser &P;
   ASTContext &Context;
-  Parser::ParserPosition ExprBeginPosition;
+  ParserPosition ExprBeginPosition;
 
   /// The declaration parsed during delayed parsing that was caused by code
   /// completion. This declaration contained the code completion token.
-  Decl *DelayedParsedDecl = nullptr;
-
-  /// If code completion is done inside a controlling expression of a C-style
-  /// for loop statement, this is the declaration of the iteration variable.
-  Decl *CStyleForLoopIterationVariable = nullptr;
+  Decl *ParsedDecl = nullptr;
 
   /// True if code completion is done inside a raw value expression of an enum
   /// case.
@@ -69,38 +65,20 @@ public:
     return CompleteExprSelectorContext != ObjCSelectorContext::None;
   }
 
-  void setExprBeginning(Parser::ParserPosition PP) {
+  void setExprBeginning(ParserPosition PP) {
     ExprBeginPosition = PP;
   }
 
-  void setDelayedParsedDecl(Decl *D) {
-    DelayedParsedDecl = D;
+  /// Set the decl inside which the code-completion occurred.  This is used when
+  /// completing inside a parameter list or where clause where the Parser's
+  /// CurDeclContext will not be where we want to perform lookup.
+  void setParsedDecl(Decl *D) {
+    ParsedDecl = D;
   }
 
   void setLeadingSequenceExprs(ArrayRef<Expr *> exprs) {
     leadingSequenceExprs.assign(exprs.begin(), exprs.end());
   }
-
-  class InCStyleForExprRAII {
-    CodeCompletionCallbacks *Callbacks;
-
-  public:
-    InCStyleForExprRAII(CodeCompletionCallbacks *Callbacks,
-                        Decl *IterationVariable)
-        : Callbacks(Callbacks) {
-      if (Callbacks)
-        Callbacks->CStyleForLoopIterationVariable = IterationVariable;
-    }
-
-    void finished() {
-      if (Callbacks)
-        Callbacks->CStyleForLoopIterationVariable = nullptr;
-    }
-
-    ~InCStyleForExprRAII() {
-      finished();
-    }
-  };
 
   class InEnumElementRawValueRAII {
     CodeCompletionCallbacks *Callbacks;
@@ -137,62 +115,69 @@ public:
     }
   };
 
-  /// \brief Complete the whole expression.  This is a fallback that should
+  /// Complete the whole expression.  This is a fallback that should
   /// produce results when more specific completion methods failed.
   virtual void completeExpr() = 0;
 
-  /// \brief Complete expr-dot after we have consumed the dot.
+  /// Complete expr-dot after we have consumed the dot.
   virtual void completeDotExpr(Expr *E, SourceLoc DotLoc) = 0;
 
-  /// \brief Complete the beginning of a statement or expression.
+  /// Complete the beginning of a statement or expression.
   virtual void completeStmtOrExpr() = 0;
 
-  /// \brief Complete the beginning of expr-postfix -- no tokens provided
+  /// Complete the beginning of expr-postfix -- no tokens provided
   /// by user.
   virtual void completePostfixExprBeginning(CodeCompletionExpr *E) = 0;
 
-  /// \brief Complete a given expr-postfix.
+  /// Complete the beginning of expr-postfix in a for-each loop sequqence
+  /// -- no tokens provided by user.
+  virtual void completeForEachSequenceBeginning(CodeCompletionExpr *E) = 0;
+
+  /// Complete a given expr-postfix.
   virtual void completePostfixExpr(Expr *E, bool hasSpace) = 0;
 
-  /// \brief Complete a given expr-postfix, given that there is a following
+  /// Complete a given expr-postfix, given that there is a following
   /// left parenthesis.
   virtual void completePostfixExprParen(Expr *E, Expr *CodeCompletionE) = 0;
 
-  /// \brief Complete expr-super after we have consumed the 'super' keyword.
+  /// Complete expr-super after we have consumed the 'super' keyword.
   virtual void completeExprSuper(SuperRefExpr *SRE) = 0;
 
-  /// \brief Complete expr-super after we have consumed the 'super' keyword and
+  /// Complete expr-super after we have consumed the 'super' keyword and
   /// a dot.
   virtual void completeExprSuperDot(SuperRefExpr *SRE) = 0;
 
-  /// \brief Complete the argument to an Objective-C #keyPath
+  /// Complete the argument to an Objective-C #keyPath
   /// expression.
   ///
   /// \param KPE A partial #keyPath expression that can be used to
   /// provide context. This will be \c NULL if no components of the
   /// #keyPath argument have been parsed yet.
-  virtual void completeExprKeyPath(KeyPathExpr *KPE, bool HasDot) = 0;
+  virtual void completeExprKeyPath(KeyPathExpr *KPE, SourceLoc DotLoc) = 0;
 
-  /// \brief Complete the beginning of type-simple -- no tokens provided
+  /// Complete the beginning of type-simple -- no tokens provided
   /// by user.
   virtual void completeTypeSimpleBeginning() = 0;
 
-  /// \brief Complete a given type-identifier after we have consumed the dot.
+  /// Complete a given type-identifier after we have consumed the dot.
   virtual void completeTypeIdentifierWithDot(IdentTypeRepr *ITR) = 0;
 
-  /// \brief Complete a given type-identifier when there is no trailing dot.
+  /// Complete a given type-identifier when there is no trailing dot.
   virtual void completeTypeIdentifierWithoutDot(IdentTypeRepr *ITR) = 0;
 
-  /// \brief Complete at the beginning of a case stmt pattern.
+  /// Complete at the beginning of a case stmt pattern.
   virtual void completeCaseStmtBeginning() = 0;
 
-  /// \brief Complete a case stmt pattern that starts with a dot.
+  /// Complete a case stmt pattern that starts with a dot.
   virtual void completeCaseStmtDotPrefix() = 0;
 
   /// Complete at the beginning of member of a nominal decl member -- no tokens
   /// provided by user.
   virtual void completeNominalMemberBeginning(
       SmallVectorImpl<StringRef> &Keywords) = 0;
+
+  /// Complete at the beginning of accessor in a accessor block.
+  virtual void completeAccessorBeginning() = 0;
 
   /// Complete the keyword in attribute, for instance, @available.
   virtual void completeDeclAttrKeyword(Decl *D, bool Sil, bool Param) = 0;
@@ -201,38 +186,57 @@ public:
   /// @available.
   virtual void completeDeclAttrParam(DeclAttrKind DK, int Index) = 0;
 
+  /// Complete within a precedence group decl or after a colon in an
+  /// operator decl.
+  virtual void completeInPrecedenceGroup(SyntaxKind SK) = 0;
+
   /// Complete the platform names inside #available statements.
   virtual void completePoundAvailablePlatform() = 0;
 
   /// Complete the import decl with importable modules.
-  virtual void completeImportDecl(std::vector<std::pair<Identifier, SourceLoc>> &Path) = 0;
+  virtual void
+  completeImportDecl(std::vector<std::pair<Identifier, SourceLoc>> &Path) = 0;
 
   /// Complete unresolved members after dot.
-  virtual void completeUnresolvedMember(UnresolvedMemberExpr *E,
-                                        ArrayRef<StringRef> Identifiers,
-                                        bool HasReturn) = 0;
+  virtual void completeUnresolvedMember(CodeCompletionExpr *E,
+                                        SourceLoc DotLoc) = 0;
 
   virtual void completeAssignmentRHS(AssignExpr *E) = 0;
 
-  virtual void completeCallArg(CallExpr *E) = 0;
+  virtual void completeCallArg(CodeCompletionExpr *E) = 0;
 
   virtual void completeReturnStmt(CodeCompletionExpr *E) = 0;
 
-  virtual void completeAfterPound(CodeCompletionExpr *E, StmtKind ParentKind) = 0;
+  /// Complete a yield statement.  A missing yield index means that the
+  /// completion immediately follows the 'yield' keyword; it may be either
+  /// an expresion or a parenthesized expression list.  A present yield
+  /// index means that the completion is within the parentheses and is
+  /// for a specific yield value.
+  virtual void completeYieldStmt(CodeCompletionExpr *E,
+                                 Optional<unsigned> yieldIndex) = 0;
+
+  virtual void completeAfterPoundExpr(CodeCompletionExpr *E,
+                                      Optional<StmtKind> ParentKind) = 0;
+
+  virtual void completeAfterPoundDirective() = 0;
+
+  virtual void completePlatformCondition() = 0;
+
+  virtual void completeAfterIfStmt(bool hasElse) = 0;
 
   virtual void completeGenericParams(TypeLoc TL) = 0;
 
-  /// \brief Signals that the AST for the all the delayed-parsed code was
+  /// Signals that the AST for the all the delayed-parsed code was
   /// constructed.  No \c complete*() callbacks will be done after this.
   virtual void doneParsing() = 0;
 };
 
-/// \brief A factory to create instances of \c CodeCompletionCallbacks.
+/// A factory to create instances of \c CodeCompletionCallbacks.
 class CodeCompletionCallbacksFactory {
 public:
   virtual ~CodeCompletionCallbacksFactory() {}
 
-  /// \brief Create an instance of \c CodeCompletionCallbacks.  The result
+  /// Create an instance of \c CodeCompletionCallbacks.  The result
   /// should be deallocated with 'delete'.
   virtual CodeCompletionCallbacks *createCodeCompletionCallbacks(Parser &P) = 0;
 };
@@ -240,4 +244,3 @@ public:
 } // namespace swift
 
 #endif // LLVM_SWIFT_PARSE_CODE_COMPLETION_CALLBACKS_H
-

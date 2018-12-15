@@ -12,6 +12,7 @@
 
 #include "swift/SILOptimizer/PassManager/Passes.h"
 #include "swift/SILOptimizer/PassManager/Transforms.h"
+#include "swift/SILOptimizer/Utils/ConstExpr.h"
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/DiagnosticEngine.h"
 #include "swift/AST/DiagnosticsSema.h"
@@ -23,6 +24,7 @@
 #include "swift/SIL/SILLocation.h"
 #include "swift/SIL/SILModule.h"
 #include "swift/SIL/SILVisitor.h"
+#include "swift/SIL/SILConstants.h"
 
 using namespace swift;
 
@@ -43,6 +45,8 @@ static void diagnoseMissingReturn(const UnreachableInst *UI,
 
   if (auto *FD = FLoc.getAsASTNode<FuncDecl>()) {
     ResTy = FD->getResultInterfaceType();
+  } else if (auto *CD = FLoc.getAsASTNode<ConstructorDecl>()) {
+    ResTy = CD->getResultInterfaceType();
   } else if (auto *CE = FLoc.getAsASTNode<ClosureExpr>()) {
     ResTy = CE->getResultType();
   } else {
@@ -91,7 +95,7 @@ static void diagnoseUnreachable(const SILInstruction *I,
   }
 }
 
-/// \brief Issue diagnostics whenever we see Builtin.static_report(1, ...).
+/// Issue diagnostics whenever we see Builtin.static_report(1, ...).
 static void diagnoseStaticReports(const SILInstruction *I,
                                   SILModule &M) {
 
@@ -112,18 +116,70 @@ static void diagnoseStaticReports(const SILInstruction *I,
   }
 }
 
+/// Emit a diagnostic for `poundAssert` builtins whose condition is
+/// false or whose condition cannot be evaluated.
+static void diagnosePoundAssert(const SILInstruction *I,
+                                SILModule &M,
+                                ConstExprEvaluator &constantEvaluator) {
+  auto *builtinInst = dyn_cast<BuiltinInst>(I);
+  if (!builtinInst ||
+      builtinInst->getBuiltinKind() != BuiltinValueKind::PoundAssert)
+    return;
+
+  SmallVector<SymbolicValue, 1> values;
+  constantEvaluator.computeConstantValues({builtinInst->getArguments()[0]},
+                                          values);
+  SymbolicValue value = values[0];
+  if (!value.isConstant()) {
+    diagnose(M.getASTContext(), I->getLoc().getSourceLoc(),
+             diag::pound_assert_condition_not_constant);
+
+    // If we have more specific information about what went wrong, emit
+    // notes.
+    if (value.getKind() == SymbolicValue::Unknown)
+      value.emitUnknownDiagnosticNotes(builtinInst->getLoc());
+    return;
+  }
+  assert(value.getKind() == SymbolicValue::Integer &&
+         "sema prevents non-integer #assert condition");
+
+  APInt intValue = value.getIntegerValue();
+  assert(intValue.getBitWidth() == 1 &&
+         "sema prevents non-int1 #assert condition");
+  if (intValue.isNullValue()) {
+    auto *message = cast<StringLiteralInst>(builtinInst->getArguments()[1]);
+    StringRef messageValue = message->getValue();
+    if (messageValue.empty())
+      messageValue = "assertion failed";
+    diagnose(M.getASTContext(), I->getLoc().getSourceLoc(),
+             diag::pound_assert_failure, messageValue);
+    return;
+  }
+}
+
 namespace {
 class EmitDFDiagnostics : public SILFunctionTransform {
   ~EmitDFDiagnostics() override {}
 
   /// The entry point to the transformation.
   void run() override {
+    // Don't rerun diagnostics on deserialized functions.
+    if (getFunction()->wasDeserializedCanonical())
+      return;
+
     SILModule &M = getFunction()->getModule();
     for (auto &BB : *getFunction())
       for (auto &I : BB) {
         diagnoseUnreachable(&I, M.getASTContext());
         diagnoseStaticReports(&I, M);
       }
+
+    if (M.getASTContext().LangOpts.EnableExperimentalStaticAssert) {
+      ConstExprEvaluator constantEvaluator(M);
+      for (auto &BB : *getFunction())
+        for (auto &I : BB)
+          diagnosePoundAssert(&I, M, constantEvaluator);
+    }
   }
 };
 } // end anonymous namespace

@@ -52,6 +52,8 @@ public:
       return S;
     case StmtKind::Brace:
       return transformBraceStmt(cast<BraceStmt>(S));
+    case StmtKind::Defer:
+      return transformDeferStmt(cast<DeferStmt>(S));
     case StmtKind::If:
       return transformIfStmt(cast<IfStmt>(S));
     case StmtKind::Guard:
@@ -61,9 +63,6 @@ public:
     }
     case StmtKind::RepeatWhile: {
       return transformRepeatWhileStmt(cast<RepeatWhileStmt>(S));
-    }
-    case StmtKind::For: {
-      return transformForStmt(cast<ForStmt>(S));
     }
     case StmtKind::ForEach: {
       return transformForEachStmt(cast<ForEachStmt>(S));
@@ -187,17 +186,6 @@ public:
     return RWS;
   }
 
-  ForStmt *transformForStmt(ForStmt *FS) {
-    if (Stmt *B = FS->getBody()) {
-      Stmt *NB = transformStmt(B);
-      if (NB != B) {
-        FS->setBody(NB);
-      }
-    }
-
-    return FS;
-  }
-
   ForEachStmt *transformForEachStmt(ForEachStmt *FES) {
     if (BraceStmt *B = FES->getBody()) {
       BraceStmt *NB = transformBraceStmt(B);
@@ -209,7 +197,7 @@ public:
       // if (FD->getBodyResultTypeLoc().hasLocation()) {
       //   EndLoc = FD->getBodyResultTypeLoc().getSourceRange().End;
       // } else {
-      //   EndLoc = FD->getParameterLists().back()->getSourceRange().End;
+      //   EndLoc = FD->getParameters()->getSourceRange().End;
       // }
 
       if (StartLoc.isValid() && EndLoc.isValid()) {
@@ -296,6 +284,21 @@ public:
     }
     return DCS;
   }
+  
+  DeferStmt *transformDeferStmt(DeferStmt *DS) {
+    if (auto *FD = DS->getTempDecl()) {
+      // Temporarily unmark the DeferStmt's FuncDecl as implicit so it is
+      // transformed (as typically implicit Decls are skipped by the
+      // transformer).
+      auto Implicit = FD->isImplicit();
+      FD->setImplicit(false);
+      auto *D = transformDecl(FD);
+      D->setImplicit(Implicit);
+      assert(D == FD);
+    }
+    return DS;
+
+  }
 
   Decl *transformDecl(Decl *D) {
     if (D->isImplicit())
@@ -311,18 +314,15 @@ public:
         if (FD->getBodyResultTypeLoc().hasLocation()) {
           EndLoc = FD->getBodyResultTypeLoc().getSourceRange().End;
         } else {
-          EndLoc = FD->getParameterLists().back()->getSourceRange().End;
+          EndLoc = FD->getParameters()->getSourceRange().End;
         }
 
-        if (EndLoc.isValid()) {
-          BraceStmt *NNB = prependLoggerCall(NB, {StartLoc, EndLoc});
-          if (NNB != B) {
-            FD->setBody(NNB);
-          }
-        } else {
-          if (NB != B) {
-            FD->setBody(NB);
-          }
+        if (EndLoc.isValid())
+          NB = prependLoggerCall(NB, {StartLoc, EndLoc});
+
+        if (NB != B) {
+          FD->setBody(NB);
+          TypeChecker::createForContext(Context).checkFunctionErrorHandling(FD);
         }
       }
     } else if (auto *NTD = dyn_cast<NominalTypeDecl>(D)) {
@@ -479,18 +479,17 @@ public:
     }
 
     VarDecl *VD =
-        new (Context) VarDecl(/*IsStatic*/false, /*IsLet*/true,
+        new (Context) VarDecl(/*IsStatic*/false, VarDecl::Specifier::Let,
                               /*IsCaptureList*/false, SourceLoc(),
                               Context.getIdentifier(NameBuf),
-                              MaybeLoadInitExpr->getType(), TypeCheckDC);
-
+                              TypeCheckDC);
+    VD->setType(MaybeLoadInitExpr->getType());
+    VD->setInterfaceType(MaybeLoadInitExpr->getType()->mapTypeOutOfContext());
     VD->setImplicit();
 
     NamedPattern *NP = new (Context) NamedPattern(VD, /*implicit*/ true);
-    PatternBindingDecl *PBD = PatternBindingDecl::create(
-        Context, SourceLoc(), StaticSpellingKind::None, SourceLoc(), NP,
-        MaybeLoadInitExpr, TypeCheckDC);
-    PBD->setImplicit();
+    PatternBindingDecl *PBD = PatternBindingDecl::createImplicit(
+        Context, StaticSpellingKind::None, NP, MaybeLoadInitExpr, TypeCheckDC);
 
     return std::make_pair(PBD, VD);
   }
@@ -532,26 +531,10 @@ public:
     std::pair<unsigned, unsigned> EndLC = Context.SourceMgr.getLineAndColumn(
         Lexer::getLocForEndOfToken(Context.SourceMgr, SR.End));
 
-    const size_t buf_size = 8;
-
-    char *start_line_buf = (char *)Context.Allocate(buf_size, 1);
-    char *end_line_buf = (char *)Context.Allocate(buf_size, 1);
-    char *start_column_buf = (char *)Context.Allocate(buf_size, 1);
-    char *end_column_buf = (char *)Context.Allocate(buf_size, 1);
-
-    ::snprintf(start_line_buf, buf_size, "%u", StartLC.first);
-    ::snprintf(start_column_buf, buf_size, "%u", StartLC.second);
-    ::snprintf(end_line_buf, buf_size, "%u", EndLC.first);
-    ::snprintf(end_column_buf, buf_size, "%u", EndLC.second);
-
-    Expr *StartLine =
-        new (Context) IntegerLiteralExpr(start_line_buf, SR.End, true);
-    Expr *EndLine =
-        new (Context) IntegerLiteralExpr(end_line_buf, SR.End, true);
-    Expr *StartColumn =
-        new (Context) IntegerLiteralExpr(start_column_buf, SR.End, true);
-    Expr *EndColumn =
-        new (Context) IntegerLiteralExpr(end_column_buf, SR.End, true);
+    Expr *StartLine = IntegerLiteralExpr::createFromUnsigned(Context, StartLC.first);
+    Expr *EndLine = IntegerLiteralExpr::createFromUnsigned(Context, EndLC.first);
+    Expr *StartColumn = IntegerLiteralExpr::createFromUnsigned(Context, StartLC.second);
+    Expr *EndColumn = IntegerLiteralExpr::createFromUnsigned(Context, EndLC.second);
 
     llvm::SmallVector<Expr *, 5> ArgsWithSourceRange{};
 
@@ -615,26 +598,10 @@ public:
     std::pair<unsigned, unsigned> EndLC = Context.SourceMgr.getLineAndColumn(
         Lexer::getLocForEndOfToken(Context.SourceMgr, SR.End));
 
-    const size_t buf_size = 8;
-
-    char *start_line_buf = (char *)Context.Allocate(buf_size, 1);
-    char *end_line_buf = (char *)Context.Allocate(buf_size, 1);
-    char *start_column_buf = (char *)Context.Allocate(buf_size, 1);
-    char *end_column_buf = (char *)Context.Allocate(buf_size, 1);
-
-    ::snprintf(start_line_buf, buf_size, "%u", StartLC.first);
-    ::snprintf(start_column_buf, buf_size, "%u", StartLC.second);
-    ::snprintf(end_line_buf, buf_size, "%u", EndLC.first);
-    ::snprintf(end_column_buf, buf_size, "%u", EndLC.second);
-
-    Expr *StartLine =
-        new (Context) IntegerLiteralExpr(start_line_buf, SR.End, true);
-    Expr *EndLine =
-        new (Context) IntegerLiteralExpr(end_line_buf, SR.End, true);
-    Expr *StartColumn =
-        new (Context) IntegerLiteralExpr(start_column_buf, SR.End, true);
-    Expr *EndColumn =
-        new (Context) IntegerLiteralExpr(end_column_buf, SR.End, true);
+    Expr *StartLine = IntegerLiteralExpr::createFromUnsigned(Context, StartLC.first);
+    Expr *EndLine = IntegerLiteralExpr::createFromUnsigned(Context, EndLC.first);
+    Expr *StartColumn = IntegerLiteralExpr::createFromUnsigned(Context, StartLC.second);
+    Expr *EndColumn = IntegerLiteralExpr::createFromUnsigned(Context, EndLC.second);
 
     llvm::SmallVector<Expr *, 4> ArgsWithSourceRange{};
 
@@ -689,12 +656,7 @@ void swift::performPCMacro(SourceFile &SF, TopLevelContext &TLC) {
           if (FD->getBody()) {
             ASTContext &ctx = FD->getASTContext();
             Instrumenter I(ctx, FD, TmpNameIndex);
-            Decl *NewDecl = I.transformDecl(FD);
-            if (AbstractFunctionDecl *NFD =
-                    dyn_cast<AbstractFunctionDecl>(NewDecl)) {
-              TypeChecker TC(ctx);
-              TC.checkFunctionErrorHandling(NFD);
-            }
+            I.transformDecl(FD);
             return false;
           }
         }
@@ -706,7 +668,7 @@ void swift::performPCMacro(SourceFile &SF, TopLevelContext &TLC) {
             BraceStmt *NewBody = I.transformBraceStmt(Body, true);
             if (NewBody != Body) {
               TLCD->setBody(NewBody);
-              TypeChecker TC(ctx);
+              TypeChecker &TC = TypeChecker::createForContext(ctx);
               TC.checkTopLevelErrorHandling(TLCD);
               TC.contextualizeTopLevelCode(TLC,
                                            SmallVector<Decl *, 1>(1, TLCD));

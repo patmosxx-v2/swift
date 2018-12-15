@@ -10,7 +10,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "NameLookupImpl.h"
 #include "swift/AST/NameLookup.h"
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/LazyResolver.h"
@@ -171,11 +170,6 @@ static void lookupInModule(ModuleDecl *module, ModuleDecl::AccessPathTy accessPa
   if (respectAccessControl) {
     auto newEndIter = std::remove_if(localDecls.begin(), localDecls.end(),
                                     [=](ValueDecl *VD) {
-      if (typeResolver) {
-        typeResolver->resolveAccessibility(VD);
-      }
-      if (!VD->hasAccessibility())
-        return false;
       return !VD->isAccessibleFrom(moduleScopeContext);
     });
     localDecls.erase(newEndIter, localDecls.end());

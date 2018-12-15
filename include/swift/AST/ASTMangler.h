@@ -16,11 +16,16 @@
 #include "swift/Basic/Mangler.h"
 #include "swift/AST/Types.h"
 #include "swift/AST/Decl.h"
-#include "swift/AST/GenericSignature.h"
+
+namespace clang {
+class NamedDecl;
+}
 
 namespace swift {
 
 class AbstractClosureExpr;
+class ConformanceAccessPath;
+class RootProtocolConformance;
 
 namespace Mangle {
 
@@ -29,13 +34,12 @@ class ASTMangler : public Mangler {
 protected:
   CanGenericSignature CurGenericSignature;
   ModuleDecl *Mod = nullptr;
-  const DeclContext *DeclCtx = nullptr;
-  GenericEnvironment *GenericEnv = nullptr;
 
   /// Optimize out protocol names if a type only conforms to one protocol.
   bool OptimizeProtocolNames = true;
 
-  /// If enabled, Arche- and Alias types are mangled with context.
+  /// If enabled, non-canonical types are allowed and type alias types get a
+  /// special mangling.
   bool DWARFMangling;
 
   /// If enabled, entities that ought to have names but don't get a placeholder.
@@ -43,6 +47,23 @@ protected:
   /// If disabled, it is an error to try to mangle such an entity.
   bool AllowNamelessEntities = false;
 
+  /// If enabled, some entities will be emitted as symbolic reference
+  /// placeholders. The offsets of these references will be stored in the
+  /// `SymbolicReferences` vector, and it is up to the consumer of the mangling
+  /// to fill these in.
+  bool AllowSymbolicReferences = false;
+
+public:
+  using SymbolicReferent = llvm::PointerUnion<const NominalTypeDecl *,
+                                              const ProtocolConformance *>;
+protected:
+
+  /// If set, the mangler calls this function to determine whether to symbolic
+  /// reference a given entity. Defaults to always returning true.
+  std::function<bool (SymbolicReferent)> CanSymbolicReference;
+
+  std::vector<std::pair<SymbolicReferent, unsigned>> SymbolicReferences;
+  
 public:
   enum class SymbolKind {
     Default,
@@ -72,8 +93,7 @@ public:
                                           bool isDestroyer, SymbolKind SKind);
 
   std::string mangleAccessorEntity(AccessorKind kind,
-                                   AddressorKind addressorKind,
-                                   const ValueDecl *decl,
+                                   const AbstractStorageDecl *decl,
                                    bool isStatic,
                                    SymbolKind SKind);
 
@@ -95,15 +115,13 @@ public:
                                            const ConstructorDecl *Derived,
                                            bool isAllocating);
 
-  std::string mangleWitnessTable(const NormalProtocolConformance *C);
+  std::string mangleWitnessTable(const RootProtocolConformance *C);
 
   std::string mangleWitnessThunk(const ProtocolConformance *Conformance,
                                  const ValueDecl *Requirement);
 
   std::string mangleClosureWitnessThunk(const ProtocolConformance *Conformance,
                                         const AbstractClosureExpr *Closure);
-
-  std::string mangleBehaviorInitThunk(const VarDecl *decl);
 
   std::string mangleGlobalVariableFull(const VarDecl *decl);
 
@@ -114,15 +132,24 @@ public:
                                              Type FromType, Type ToType,
                                              ModuleDecl *Module);
   
-  std::string mangleKeyPathGetterThunkHelper(const VarDecl *property,
+  std::string mangleKeyPathGetterThunkHelper(const AbstractStorageDecl *property,
                                              GenericSignature *signature,
-                                             CanType baseType);
-  std::string mangleKeyPathSetterThunkHelper(const VarDecl *property,
+                                             CanType baseType,
+                                             SubstitutionMap subs,
+                                             ResilienceExpansion expansion);
+  std::string mangleKeyPathSetterThunkHelper(const AbstractStorageDecl *property,
                                              GenericSignature *signature,
-                                             CanType baseType);
+                                             CanType baseType,
+                                             SubstitutionMap subs,
+                                             ResilienceExpansion expansion);
+  std::string mangleKeyPathEqualsHelper(ArrayRef<CanType> indices,
+                                        GenericSignature *signature,
+                                        ResilienceExpansion expansion);
+  std::string mangleKeyPathHashHelper(ArrayRef<CanType> indices,
+                                      GenericSignature *signature,
+                                      ResilienceExpansion expansion);
 
-  std::string mangleTypeForDebugger(Type decl, const DeclContext *DC,
-                                    GenericEnvironment *GE);
+  std::string mangleTypeForDebugger(Type decl, const DeclContext *DC);
 
   std::string mangleDeclType(const ValueDecl *decl);
   
@@ -137,9 +164,19 @@ public:
   std::string mangleDeclAsUSR(const ValueDecl *Decl, StringRef USRPrefix);
 
   std::string mangleAccessorEntityAsUSR(AccessorKind kind,
-                                        AddressorKind addressorKind,
-                                        const ValueDecl *decl,
+                                        const AbstractStorageDecl *decl,
                                         StringRef USRPrefix);
+
+  enum SpecialContext {
+    ObjCContext,
+    ClangImporterContext,
+  };
+  
+  static Optional<SpecialContext>
+  getSpecialManglingContext(const ValueDecl *decl);
+
+  static const clang::NamedDecl *
+  getClangDeclForMangling(const ValueDecl *decl);
 
 protected:
 
@@ -159,7 +196,7 @@ protected:
 
   void bindGenericParameters(CanGenericSignature sig);
 
-  /// \brief Mangles a sugared type iff we are mangling for the debugger.
+  /// Mangles a sugared type iff we are mangling for the debugger.
   template <class T> void appendSugaredType(Type type) {
     assert(DWARFMangling &&
            "sugared types are only legal when mangling for the debugger");
@@ -169,6 +206,18 @@ protected:
 
   void appendBoundGenericArgs(Type type, bool &isFirstArgList);
 
+  /// Append the bound generics arguments for the given declaration context
+  /// based on a complete substitution map.
+  ///
+  /// \returns the number of generic parameters that were emitted
+  /// thus far.
+  unsigned appendBoundGenericArgs(DeclContext *dc,
+                                  SubstitutionMap subs,
+                                  bool &isFirstArgList);
+
+  /// Append any retroactive conformances.
+  void appendRetroactiveConformances(Type type);
+
   void appendImplFunctionType(SILFunctionType *fn);
 
   void appendContextOf(const ValueDecl *decl);
@@ -177,23 +226,38 @@ protected:
 
   void appendModule(const ModuleDecl *module);
 
-  void appendProtocolName(const ProtocolDecl *protocol);
+  void appendProtocolName(const ProtocolDecl *protocol,
+                          bool allowStandardSubstitution = true);
 
   void appendAnyGenericType(const GenericTypeDecl *decl);
 
-  void appendFunctionType(AnyFunctionType *fn, bool forceSingleParam);
+  void appendFunction(AnyFunctionType *fn, bool isFunctionMangling = false);
+  void appendFunctionType(AnyFunctionType *fn, bool isAutoClosure = false);
 
-  void appendFunctionSignature(AnyFunctionType *fn, bool forceSingleParam);
+  void appendFunctionSignature(AnyFunctionType *fn);
 
-  void appendParams(Type ParamsTy, bool forceSingleParam);
+  void appendFunctionInputType(ArrayRef<AnyFunctionType::Param> params);
+  void appendFunctionResultType(Type resultType);
 
   void appendTypeList(Type listTy);
+  void appendTypeListElement(Identifier name, Type elementType,
+                             ParameterTypeFlags flags);
 
-  void appendGenericSignature(const GenericSignature *sig);
+  /// Append a generic signature to the mangling.
+  ///
+  /// \param sig The generic signature.
+  ///
+  /// \param contextSig The signature of the known context. This function
+  /// will only mangle the difference between \c sig and \c contextSig.
+  ///
+  /// \returns \c true if a generic signature was appended, \c false
+  /// if it was empty.
+  bool appendGenericSignature(const GenericSignature *sig,
+                              GenericSignature *contextSig = nullptr);
 
   void appendRequirement(const Requirement &reqt);
 
-  void appendGenericSignatureParts(ArrayRef<GenericTypeParamType*> params,
+  void appendGenericSignatureParts(TypeArrayView<GenericTypeParamType> params,
                                    unsigned initialParamDepth,
                                    ArrayRef<Requirement> requirements);
 
@@ -204,18 +268,15 @@ protected:
   void appendClosureEntity(const AbstractClosureExpr *closure);
 
   void appendClosureComponents(Type Ty, unsigned discriminator, bool isImplicit,
-                               const DeclContext *parentContext,
-                               const DeclContext *localContext);
+                               const DeclContext *parentContext);
 
   void appendDefaultArgumentEntity(const DeclContext *ctx, unsigned index);
 
   void appendInitializerEntity(const VarDecl *var);
 
   CanType getDeclTypeForMangling(const ValueDecl *decl,
-                                 ArrayRef<GenericTypeParamType *> &genericParams,
-                                 unsigned &initialParamIndex,
-                                 ArrayRef<Requirement> &requirements,
-                                 SmallVectorImpl<Requirement> &requirementsBuf);
+                                 GenericSignature *&genericSig,
+                                 GenericSignature *&parentGenericSig);
 
   void appendDeclType(const ValueDecl *decl, bool isFunctionMangling = false);
 
@@ -225,19 +286,26 @@ protected:
   
   void appendDestructorEntity(const DestructorDecl *decl, bool isDeallocating);
 
-  void appendAccessorEntity(AccessorKind kind,
-                            AddressorKind addressorKind,
-                            const ValueDecl *decl,
-                            bool isStatic);
+  /// \param accessorKindCode The code to describe the accessor and addressor
+  /// kind. Usually retrieved using getCodeForAccessorKind.
+  /// \param decl The storage decl for which to mangle the accessor
+  /// \param isStatic Whether or not the accessor is static
+  void appendAccessorEntity(StringRef accessorKindCode,
+                            const AbstractStorageDecl *decl, bool isStatic);
 
   void appendEntity(const ValueDecl *decl, StringRef EntityOp, bool isStatic);
 
   void appendEntity(const ValueDecl *decl);
 
   void appendProtocolConformance(const ProtocolConformance *conformance);
-
+  void appendProtocolConformanceRef(const RootProtocolConformance *conformance);
+  void appendConcreteProtocolConformance(
+                                        const ProtocolConformance *conformance);
+  void appendDependentProtocolConformance(const ConformanceAccessPath &path);
   void appendOpParamForLayoutConstraint(LayoutConstraint Layout);
-
+  
+  void appendSymbolicReference(SymbolicReferent referent);
+  
   std::string mangleTypeWithoutPrefix(Type type) {
     appendType(type);
     return finalize();

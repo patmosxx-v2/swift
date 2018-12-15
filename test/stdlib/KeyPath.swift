@@ -1,5 +1,6 @@
 // RUN: %empty-directory(%t)
-// RUN: %target-build-swift %s -Xfrontend -enable-experimental-keypath-components -o %t/a.out
+// RUN: %target-build-swift -swift-version 5 -g %s -o %t/a.out
+// RUN: %target-codesign %t/a.out
 // RUN: %target-run %t/a.out
 // REQUIRES: executable_test
 
@@ -11,11 +12,24 @@ final class C<T> {
   var x: Int
   var y: LifetimeTracked?
   var z: T
+  let immutable: String
+  private(set) var secretlyMutable: String
+
+  var computed: T {
+    get {
+      return z
+    }
+    set {
+      z = newValue
+    }
+  }
 
   init(x: Int, y: LifetimeTracked?, z: T) {
     self.x = x
     self.y = y
     self.z = z
+    self.immutable = "\(x) \(y) \(z)"
+    self.secretlyMutable = immutable
   }
 }
 
@@ -23,10 +37,14 @@ struct Point: Equatable {
   var x: Double
   var y: Double
   var trackLifetime = LifetimeTracked(123)
+  let hypotenuse: Double
+  private(set) var secretlyMutableHypotenuse: Double
   
   init(x: Double, y: Double) {
     self.x = x
     self.y = y
+    hypotenuse = x*x + y*y
+    secretlyMutableHypotenuse = x*x + y*y
   }
   
   static func ==(a: Point, b: Point) -> Bool {
@@ -346,4 +364,442 @@ keyPath.test("dynamically-typed application") {
   }
 }
 
+struct TestOptional {
+  var origin: Point?
+  var questionableCanary: LifetimeTracked? = LifetimeTracked(123)
+
+  init(origin: Point?) {
+    self.origin = origin
+  }
+}
+
+keyPath.test("optional force-unwrapping") {
+  let origin_x = \TestOptional.origin!.x
+  let canary = \TestOptional.questionableCanary!
+
+  var value = TestOptional(origin: Point(x: 3, y: 4))
+
+  expectEqual(value[keyPath: origin_x], 3)
+  expectEqual(value.origin!.x, 3)
+
+  value[keyPath: origin_x] = 5
+
+  expectEqual(value[keyPath: origin_x], 5)
+  expectEqual(value.origin!.x, 5)
+
+  expectTrue(value[keyPath: canary] === value.questionableCanary)
+  let newCanary = LifetimeTracked(456)
+  value[keyPath: canary] = newCanary
+  expectTrue(value[keyPath: canary] === newCanary)
+  expectTrue(value.questionableCanary === newCanary)
+}
+
+keyPath.test("optional force-unwrapping trap") {
+  let origin_x = \TestOptional.origin!.x
+  var value = TestOptional(origin: nil)
+
+  expectCrashLater()
+  _ = value[keyPath: origin_x]
+}
+
+struct TestOptional2 {
+  var optional: TestOptional?
+}
+
+keyPath.test("optional chaining") {
+  let origin_x = \TestOptional.origin?.x
+  let canary = \TestOptional.questionableCanary?.value
+  
+  let withPoint = TestOptional(origin: Point(x: 3, y: 4))
+  expectEqual(withPoint[keyPath: origin_x]!, 3)
+  expectEqual(withPoint[keyPath: canary]!, 123)
+
+  let withoutPoint = TestOptional(origin: nil)
+  expectNil(withoutPoint[keyPath: origin_x])
+
+  let optional2: TestOptional2? = TestOptional2(optional: withPoint)
+  let optional2_optional = \TestOptional2?.?.optional
+  expectEqual(optional2[keyPath: optional2_optional]!.origin!.x, 3)
+  expectEqual(optional2[keyPath: optional2_optional]!.origin!.y, 4)
+}
+
+func makeKeyPathInGenericContext<T>(of: T.Type)
+    -> ReferenceWritableKeyPath<C<T>, T> {
+  return \C<T>.computed
+}
+
+keyPath.test("computed generic key paths") {
+  let path = makeKeyPathInGenericContext(of: LifetimeTracked.self)
+  let z = LifetimeTracked(456)
+  let c = C(x: 42, y: LifetimeTracked(123), z: z)
+
+  expectTrue(c[keyPath: path] === z)
+
+  let z2 = LifetimeTracked(789)
+  c[keyPath: path] = z2
+  expectTrue(c[keyPath: path] === z2)
+  expectTrue(c.z === z2)
+
+  let path2 = makeKeyPathInGenericContext(of: LifetimeTracked.self)
+
+  expectEqual(path, path2)
+  expectEqual(path.hashValue, path2.hashValue)
+
+  let pathNonGeneric = \C<LifetimeTracked>.computed
+  expectEqual(path, pathNonGeneric)
+  expectEqual(path.hashValue, pathNonGeneric.hashValue)
+
+  let valuePath = path.appending(path: \LifetimeTracked.value)
+
+  expectEqual(c[keyPath: valuePath], 789)
+
+  let valuePathNonGeneric = pathNonGeneric.appending(path: \LifetimeTracked.value)
+  expectEqual(valuePath, valuePathNonGeneric)
+  expectEqual(valuePath.hashValue, valuePathNonGeneric.hashValue)
+}
+
+var numberOfMutatingWritebacks = 0
+var numberOfNonmutatingWritebacks = 0
+
+struct NoisyWriteback {
+  var canary = LifetimeTracked(246)
+
+  var mutating: LifetimeTracked {
+    get { return canary }
+    set { numberOfMutatingWritebacks += 1 }
+  }
+
+  var nonmutating: LifetimeTracked {
+    get { return canary }
+    nonmutating set { numberOfNonmutatingWritebacks += 1 }
+  }
+}
+
+keyPath.test("read-only accesses don't trigger writebacks") {
+  var x = NoisyWriteback()
+  x = NoisyWriteback() // suppress "never mutated" warnings
+
+  let wkp = \NoisyWriteback.mutating
+  let rkp = \NoisyWriteback.nonmutating
+
+  numberOfMutatingWritebacks = 0
+  numberOfNonmutatingWritebacks = 0
+  _ = x[keyPath: wkp]
+  _ = x[keyPath: rkp]
+
+  expectEqual(x[keyPath: wkp].value, 246)
+  expectEqual(x[keyPath: rkp].value, 246)
+
+  expectEqual(numberOfMutatingWritebacks, 0)
+  expectEqual(numberOfNonmutatingWritebacks, 0)
+
+  let y = x
+  _ = y[keyPath: wkp]
+  _ = y[keyPath: rkp]
+
+  expectEqual(y[keyPath: wkp].value, 246)
+  expectEqual(y[keyPath: rkp].value, 246)
+
+  expectEqual(numberOfMutatingWritebacks, 0)
+  expectEqual(numberOfNonmutatingWritebacks, 0)
+}
+
+var nestedWritebackLog = 0
+
+struct NoisyNestingWriteback {
+  var value: Int
+
+  var nested: NoisyNestingWriteback {
+    get {
+      return NoisyNestingWriteback(value: value + 1)
+    }
+    set {
+      nestedWritebackLog = nestedWritebackLog << 8 | newValue.value
+      value = newValue.value - 1
+    }
+  }
+}
+
+keyPath.test("writebacks nest properly") {
+  var test = NoisyNestingWriteback(value: 0)
+  nestedWritebackLog = 0
+  test.nested.nested.nested.value = 0x38
+  expectEqual(nestedWritebackLog, 0x383736)
+
+  nestedWritebackLog = 0
+  let kp = \NoisyNestingWriteback.nested.nested.nested
+  test[keyPath: kp].value = 0x38
+  expectEqual(nestedWritebackLog, 0x383736)
+}
+
+struct IUOWrapper {
+  var wrapped: IUOWrapped!
+}
+
+struct IUOWrapped {
+  var value: Int
+}
+
+keyPath.test("IUO and key paths") {
+  var subject = IUOWrapper(wrapped: IUOWrapped(value: 1989))
+  let kp1 = \IUOWrapper.wrapped.value
+
+  expectEqual(subject[keyPath: kp1], 1989)
+  subject[keyPath: kp1] = 1738
+  expectEqual(subject[keyPath: kp1], 1738)
+  expectEqual(subject.wrapped.value, 1738)
+
+  let kp2 = \IUOWrapper.wrapped!.value
+
+  expectEqual(kp1, kp2)
+  expectEqual(kp1.hashValue, kp2.hashValue)
+}
+
+struct SubscriptResult<T: Hashable, U: Hashable> {
+  var canary = LifetimeTracked(3333)
+  var left: T
+  var right: U
+
+  init(left: T, right: U) {
+    self.left = left
+    self.right = right
+  }
+
+  subscript(left: T) -> Bool {
+    return self.left == left
+  }
+  subscript(right: U) -> Bool {
+    return self.right == right
+  }
+}
+
+struct Subscripts<T: Hashable> {
+  var canary = LifetimeTracked(4444)
+
+  subscript<U: Hashable>(x: T, y: U) -> SubscriptResult<T, U> {
+    return SubscriptResult(left: x, right: y)
+  }
+
+  subscript(x: Int, y: Int) -> Int {
+    return x + y
+  }
+}
+
+struct KeyA: Hashable {
+  var canary = LifetimeTracked(1111)
+  var value: String
+
+  init(value: String) { self.value = value }
+
+  static func ==(a: KeyA, b: KeyA) -> Bool { return a.value == b.value }
+  func hash(into hasher: inout Hasher) {
+    hasher.combine(value)
+  }
+}
+struct KeyB: Hashable {
+  var canary = LifetimeTracked(2222)
+
+  var value: Int
+
+  init(value: Int) { self.value = value }
+
+  static func ==(a: KeyB, b: KeyB) -> Bool { return a.value == b.value }
+  func hash(into hasher: inout Hasher) {
+    hasher.combine(value)
+  }
+}
+
+func fullGenericContext<T: Hashable, U: Hashable>(x: T, y: U) -> KeyPath<Subscripts<T>, SubscriptResult<T, U>> {
+  return \Subscripts<T>.[x, y]
+}
+
+func halfGenericContext<U: Hashable>(x: KeyA, y: U) -> KeyPath<Subscripts<KeyA>, SubscriptResult<KeyA, U>> {
+  return \Subscripts<KeyA>.[x, y]
+}
+
+func nonGenericContext(x: KeyA, y: KeyB) -> KeyPath<Subscripts<KeyA>, SubscriptResult<KeyA, KeyB>> {
+  return \Subscripts<KeyA>.[x, y]
+}
+
+keyPath.test("subscripts") {
+  let a = fullGenericContext(x: KeyA(value: "hey"), y: KeyB(value: 1738))
+  let b = halfGenericContext(x: KeyA(value: "hey"), y: KeyB(value: 1738))
+  let c = nonGenericContext(x: KeyA(value: "hey"), y: KeyB(value: 1738))
+
+  expectEqual(a, b)
+  expectEqual(a, c)
+  expectEqual(b, a)
+  expectEqual(b, c)
+  expectEqual(c, a)
+  expectEqual(c, b)
+  expectEqual(a.hashValue, b.hashValue)
+  expectEqual(a.hashValue, c.hashValue)
+  expectEqual(b.hashValue, a.hashValue)
+  expectEqual(b.hashValue, c.hashValue)
+  expectEqual(c.hashValue, a.hashValue)
+  expectEqual(c.hashValue, b.hashValue)
+
+  let base = Subscripts<KeyA>()
+
+  let kp2 = \SubscriptResult<KeyA, KeyB>.[KeyA(value: "hey")]
+
+  for kp in [a, b, c] {
+    let projected = base[keyPath: kp]
+    expectEqual(projected.left.value, "hey")
+    expectEqual(projected.right.value, 1738)
+
+    expectEqual(projected[keyPath: kp2], true)
+
+    let kp12 =
+      \Subscripts<KeyA>.[KeyA(value: "hey"), KeyB(value: 1738)][KeyA(value: "hey")]
+
+    let kp12a = kp.appending(path: kp2)
+
+    expectEqual(kp12, kp12a)
+    expectEqual(kp12a, kp12)
+    expectEqual(kp12.hashValue, kp12a.hashValue)
+  }
+
+  let ints = \Subscripts<KeyA>.[17, 38]
+  let ints2 = \Subscripts<KeyA>.[17, 38]
+  let ints3 = \Subscripts<KeyA>.[38, 17]
+  expectEqual(base[keyPath: ints], 17 + 38)
+
+  expectEqual(ints, ints2)
+  expectEqual(ints2, ints)
+  expectNotEqual(ints, ints3)
+  expectNotEqual(ints2, ints3)
+  expectNotEqual(ints3, ints)
+  expectNotEqual(ints3, ints2)
+
+  expectEqual(ints.hashValue, ints2.hashValue)
+
+  let ints_be = ints.appending(path: \Int.bigEndian)
+
+  expectEqual(base[keyPath: ints_be], (17 + 38).bigEndian)
+}
+
+struct NonOffsetableProperties {
+  // observers
+  var x: Int { didSet {} }
+  // reabstracted
+  var y: () -> ()
+  // computed
+  var z: Int { return 0 }
+}
+
+func getIdentityKeyPathOfType<T>(_: T.Type) -> KeyPath<T, T> {
+  return \.self
+}
+
+keyPath.test("offsets") {
+  let SLayout = MemoryLayout<S<Int>>.self
+  expectNotNil(SLayout.offset(of: \S<Int>.x))
+  expectNotNil(SLayout.offset(of: \S<Int>.y))
+  expectNotNil(SLayout.offset(of: \S<Int>.z))
+  expectNotNil(SLayout.offset(of: \S<Int>.p))
+  expectNotNil(SLayout.offset(of: \S<Int>.p.x))
+  expectNotNil(SLayout.offset(of: \S<Int>.p.y))
+  expectNotNil(SLayout.offset(of: \S<Int>.c))
+  expectNil(SLayout.offset(of: \S<Int>.c.x))
+
+  let NOPLayout = MemoryLayout<NonOffsetableProperties>.self
+  expectNil(NOPLayout.offset(of: \NonOffsetableProperties.x))
+  expectNil(NOPLayout.offset(of: \NonOffsetableProperties.y))
+  expectNil(NOPLayout.offset(of: \NonOffsetableProperties.z))
+
+  expectEqual(SLayout.offset(of: \.self), 0)
+  expectEqual(SLayout.offset(of: getIdentityKeyPathOfType(S<Int>.self)), 0)
+}
+
+keyPath.test("identity key path") {
+  var x = LifetimeTracked(1738)
+
+  let id = \LifetimeTracked.self
+  expectTrue(x === x[keyPath: id])
+
+  let newX = LifetimeTracked(679)
+  x[keyPath: id] = newX
+  expectTrue(x === newX)
+
+  let id2 = getIdentityKeyPathOfType(LifetimeTracked.self)
+  expectEqual(id, id2)
+  expectEqual(id.hashValue, id2.hashValue)
+  expectNotNil(id2 as? WritableKeyPath)
+
+  let id3 = id.appending(path: id2)
+  expectEqual(id, id3)
+  expectEqual(id.hashValue, id3.hashValue)
+  expectNotNil(id3 as? WritableKeyPath)
+
+  let valueKey = \LifetimeTracked.value
+  let valueKey2 = id.appending(path: valueKey)
+  let valueKey3 = (valueKey as KeyPath).appending(path: \Int.self)
+
+  expectEqual(valueKey, valueKey2)
+  expectEqual(valueKey.hashValue, valueKey2.hashValue)
+  expectEqual(valueKey, valueKey3)
+  expectEqual(valueKey.hashValue, valueKey3.hashValue)
+
+  expectEqual(x[keyPath: valueKey2], 679)
+  expectEqual(x[keyPath: valueKey3], 679)
+}
+
+keyPath.test("let-ness") {
+  expectNil(\C<Int>.immutable as? ReferenceWritableKeyPath)
+  expectNotNil(\C<Int>.secretlyMutable as? ReferenceWritableKeyPath)
+  expectNil(\Point.hypotenuse as? WritableKeyPath)
+  expectNotNil(\Point.secretlyMutableHypotenuse as? WritableKeyPath)
+}
+
+// SR-6096
+
+protocol Protocol6096 {}
+struct Value6096<ValueType> {}
+extension Protocol6096 {
+    var asString: String? {
+        return self as? String
+    }
+}
+extension Value6096 where ValueType: Protocol6096 {
+    func doSomething() {
+        _ = \ValueType.asString?.endIndex
+    }
+}
+extension Int: Protocol6096 {}
+
+keyPath.test("optional chaining component that needs generic instantiation") {
+  Value6096<Int>().doSomething()
+}
+
+// Nested generics.
+protocol HasAssoc {
+  associatedtype A
+}
+
+struct Outer<T, U> {
+  struct Middle<V, W, X> {
+  }
+}
+
+extension Outer.Middle where V: HasAssoc, U == V.A, W == X {
+  struct Inner<Y: Hashable> {
+    func foo() ->  AnyKeyPath {
+      return \[Y?: [U]].values
+    }
+  }
+}
+
+extension Double: HasAssoc {
+  typealias A = Float
+}
+
+keyPath.test("nested generics") {
+  let nested = Outer<Int, Float>.Middle<Double, String, String>.Inner<UInt>()
+  let nestedKeyPath = nested.foo()
+  typealias DictType = [UInt? : [Float]]
+  expectTrue(nestedKeyPath is KeyPath<DictType, DictType.Values>)
+}
+
 runAllTests()
+

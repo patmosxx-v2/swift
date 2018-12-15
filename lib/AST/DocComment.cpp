@@ -22,7 +22,6 @@
 #include "swift/AST/PrettyStackTrace.h"
 #include "swift/AST/RawComment.h"
 #include "swift/Markup/Markup.h"
-#include "llvm/ADT/SetVector.h"
 
 using namespace swift;
 
@@ -142,7 +141,7 @@ bool extractParameterOutline(
     L->setChildren(NormalItems);
   }
 
-  return NormalItems.size() == 0;
+  return NormalItems.empty();
 }
 
 bool extractSeparatedParams(
@@ -206,7 +205,7 @@ bool extractSeparatedParams(
   if (NormalItems.size() != Children.size())
     L->setChildren(NormalItems);
 
-  return NormalItems.size() == 0;
+  return NormalItems.empty();
 }
 
 bool extractSimpleField(
@@ -215,7 +214,6 @@ bool extractSimpleField(
     SmallVectorImpl<const swift::markup::MarkupASTNode *> &BodyNodes) {
   auto Children = L->getChildren();
   SmallVector<swift::markup::MarkupASTNode *, 8> NormalItems;
-  llvm::SmallSetVector<StringRef, 8> Tags;
   for (auto Child : Children) {
     auto I = dyn_cast<swift::markup::Item>(Child);
     if (!I) {
@@ -271,7 +269,7 @@ bool extractSimpleField(
       llvm::SmallString<64> Scratch;
       llvm::raw_svector_ostream OS(Scratch);
       printInlinesUnder(TF, OS);
-      Tags.insert(MC.allocateCopy(OS.str()));
+      Parts.Tags.insert(MC.allocateCopy(OS.str()));
     } else if (auto LKF = dyn_cast<markup::LocalizationKeyField>(Field)) {
       Parts.LocalizationKeyField = LKF;
     } else {
@@ -282,9 +280,7 @@ bool extractSimpleField(
   if (NormalItems.size() != Children.size())
     L->setChildren(NormalItems);
 
-  Parts.Tags = MC.allocateCopy(Tags.getArrayRef());
-
-  return NormalItems.size() == 0;
+  return NormalItems.empty();
 }
 
 swift::markup::CommentParts
@@ -374,8 +370,7 @@ getAnyBaseClassDocComment(swift::markup::MarkupContext &MC,
 
         auto *Text = swift::markup::Text::create(MC, MC.allocateCopy(OS.str()));
 
-        auto BaseClass =
-          BaseDecl->getDeclContext()->getAsClassOrClassExtensionContext();
+        auto BaseClass = BaseDecl->getDeclContext()->getSelfClassDecl();
 
         auto *BaseClassMonospace =
           swift::markup::Code::create(MC,
@@ -414,12 +409,14 @@ getProtocolRequirementDocComment(swift::markup::MarkupContext &MC,
                                                 const ValueDecl *VD)
     -> const ValueDecl * {
       SmallVector<ValueDecl *, 2> Members;
-      P->lookupQualified(P->getDeclaredType(), VD->getFullName(),
+      P->lookupQualified(const_cast<ProtocolDecl *>(P),
+                         VD->getFullName(),
                          NLOptions::NL_ProtocolMembers,
-                         /*typeResolver=*/nullptr, Members);
+                         Members);
     SmallVector<const ValueDecl *, 1> ProtocolRequirements;
     for (auto Member : Members)
-      if (!Member->isDefinition())
+      if (isa<ProtocolDecl>(Member->getDeclContext()) &&
+          Member->isProtocolRequirement())
         ProtocolRequirements.push_back(Member);
 
     if (ProtocolRequirements.size() == 1) {
@@ -450,11 +447,11 @@ swift::getCascadingDocComment(swift::markup::MarkupContext &MC, const Decl *D) {
 
   // If this refers to a class member, check to see if any
   // base classes have a doc comment and cascade it to here.
-  if (const auto *CD = D->getDeclContext()->getAsClassOrClassExtensionContext())
+  if (const auto *CD = D->getDeclContext()->getSelfClassDecl())
     if (auto BaseClassDoc = getAnyBaseClassDocComment(MC, CD, D))
       return BaseClassDoc;
 
-  if (const auto *PE = D->getDeclContext()->getAsProtocolExtensionContext())
+  if (const auto *PE = D->getDeclContext()->getExtendedProtocolDecl())
     if (auto ReqDoc = getProtocolRequirementDocComment(MC, PE, D))
       return ReqDoc;
 

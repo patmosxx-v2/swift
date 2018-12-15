@@ -245,6 +245,19 @@ struct CommentToXMLConverter {
     OS << "</ThrowsDiscussion>";
   }
 
+  void printTagFields(ArrayRef<StringRef> Tags) {
+    OS << "<Tags>";
+    for (const auto Tag : Tags) {
+      if (Tag.empty()) {
+        continue;
+      }
+      OS << "<Tag>";
+      appendWithXMLEscaping(OS, Tag);
+      OS << "</Tag>";
+    }
+    OS << "</Tags>";
+  }
+
   void visitDocComment(const DocComment *DC);
   void visitCommentParts(const swift::markup::CommentParts &Parts);
 };
@@ -270,6 +283,10 @@ void CommentToXMLConverter::visitCommentParts(const swift::markup::CommentParts 
 
   if (Parts.ThrowsField.hasValue())
     printThrowsDiscussion(Parts.ThrowsField.getValue());
+
+  if (!Parts.Tags.empty()) {
+    printTagFields(llvm::makeArrayRef(Parts.Tags.begin(), Parts.Tags.end()));
+  }
 
   if (!Parts.BodyNodes.empty()) {
     OS << "<Discussion>";
@@ -300,8 +317,7 @@ void CommentToXMLConverter::visitDocComment(const DocComment *DC) {
     auto Loc = D->getLoc();
     if (Loc.isValid()) {
       const auto &SM = D->getASTContext().SourceMgr;
-      unsigned BufferID = SM.findBufferContainingLoc(Loc);
-      StringRef FileName = SM.getIdentifierForBuffer(BufferID);
+      StringRef FileName = SM.getDisplayNameForLoc(Loc);
       auto LineAndColumn = SM.getLineAndColumn(Loc);
       OS << " file=\"";
       appendWithXMLEscaping(OS, FileName);
@@ -339,8 +355,8 @@ void CommentToXMLConverter::visitDocComment(const DocComment *DC) {
 
   {
     PrintOptions PO = PrintOptions::printInterface();
-    PO.PrintAccessibility = false;
-    PO.AccessibilityFilter = Accessibility::Private;
+    PO.PrintAccess = false;
+    PO.AccessFilter = AccessLevel::Private;
     PO.PrintDocumentationComments = false;
     PO.TypeDefinitions = false;
     PO.VarInitializers = false;
@@ -391,14 +407,15 @@ static void replaceObjcDeclarationsWithSwiftOnes(const Decl *D,
   std::string S;
   llvm::raw_string_ostream SS(S);
   D->print(SS, Options);
-  std::string Signature = SS.str();
   auto OI = Doc.find(Open);
   auto CI = Doc.find(Close);
-  if (StringRef::npos != OI && StringRef::npos != CI && CI > OI)
-    OS << Doc.substr(0, OI) << Open << Signature << Close <<
-      Doc.substr(CI + Close.size());
-  else
+  if (StringRef::npos != OI && StringRef::npos != CI && CI > OI) {
+    OS << Doc.substr(0, OI) << Open;
+    appendWithXMLEscaping(OS, SS.str());
+    OS << Close << Doc.substr(CI + Close.size());
+  } else {
     OS << Doc;
+  }
 }
 
 static LineList getLineListFromComment(SourceManager &SourceMgr,

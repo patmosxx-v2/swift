@@ -92,7 +92,7 @@ class StdlibDeploymentTarget(object):
 
     iOS = DarwinPlatform("iphoneos", archs=["armv7", "armv7s", "arm64"],
                          sdk_name="IOS")
-    iOSSimulator = DarwinPlatform("iphonesimulator", archs=["x86_64"],
+    iOSSimulator = DarwinPlatform("iphonesimulator", archs=["i386", "x86_64"],
                                   sdk_name="IOS_SIMULATOR",
                                   is_simulator=True)
 
@@ -113,6 +113,7 @@ class StdlibDeploymentTarget(object):
 
     Linux = Platform("linux", archs=[
         "x86_64",
+        "i686",
         "armv6",
         "armv7",
         "aarch64",
@@ -124,9 +125,11 @@ class StdlibDeploymentTarget(object):
 
     Cygwin = Platform("cygwin", archs=["x86_64"])
 
-    Android = Platform("android", archs=["armv7"])
+    Android = Platform("android", archs=["armv7", "aarch64"])
 
     Windows = Platform("windows", archs=["x86_64"])
+
+    Haiku = Platform("haiku", archs=["x86_64"])
 
     # The list of known platforms.
     known_platforms = [
@@ -138,7 +141,8 @@ class StdlibDeploymentTarget(object):
         FreeBSD,
         Cygwin,
         Android,
-        Windows]
+        Windows,
+        Haiku]
 
     # Cache of targets by name.
     _targets_by_name = dict((target.name, target)
@@ -157,6 +161,8 @@ class StdlibDeploymentTarget(object):
         if system == 'Linux':
             if machine == 'x86_64':
                 return StdlibDeploymentTarget.Linux.x86_64
+            elif machine == 'i686':
+                return StdlibDeploymentTarget.Linux.i686
             elif machine.startswith('armv7'):
                 # linux-armv7* is canonicalized to 'linux-armv7'
                 return StdlibDeploymentTarget.Linux.armv7
@@ -187,6 +193,10 @@ class StdlibDeploymentTarget(object):
         elif system == 'Windows':
             if machine == "AMD64":
                 return StdlibDeploymentTarget.Windows.x86_64
+
+        elif system == 'Haiku':
+            if machine == 'x86_64':
+                return StdlibDeploymentTarget.Haiku.x86_64
 
         raise NotImplementedError('System "%s" with architecture "%s" is not '
                                   'supported' % (system, machine))
